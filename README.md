@@ -9,7 +9,7 @@ Give it a task, and the main agent will:
 3. **Generate** real Python code for each agent (LangChain + OpenRouter)
 4. **Save** every agent as its own file in `generated_agents/`
 5. **Install** any missing pip dependencies
-6. **Execute** the agents in order — each agent sees the outputs of the ones before it
+6. **Execute** the agents in order - each agent sees the outputs of the ones before it
 7. **Merge** all outputs into one final response
 8. **Ask you**: delete the agents, or save them to `inventory/` for later reuse
 
