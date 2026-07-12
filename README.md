@@ -102,5 +102,5 @@ MODEL="openai/gpt-5.1-codex" python main.py
 ## V0 limitations (on purpose)
 
 - Sequential execution only (no parallel agents)
-- Generated code isn't sandboxed — it runs with your Python interpreter
+- Generated code isn't sandboxed - it runs with your Python interpreter
 - Saved inventory agents aren't auto-reused yet (that's the next version)
