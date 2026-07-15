@@ -1,4 +1,4 @@
-# Architecture — Dynamic Agent Creator
+# Architecture - Dynamic Agent Creator
 
 This document explains how the system is designed, why it is designed that way,
 and everything you need to know to extend or rebuild it by hand.
