@@ -86,33 +86,33 @@ it goes, that usually means it deserves a new module.
 - Note the double braces `{{ }}` inside `AGENT_TEMPLATE` — that's how you
   escape literal braces in a Python `.format()` string. Classic gotcha.
 
-### `executor.py` — filesystem + processes (no AI here)
-- `save_agent_file` — writes `generated_agents/<name>.py`.
-- `install_dependencies` — collects deps from all specs, checks each with
+### `executor.py` - filesystem + processes (no AI here)
+- `save_agent_file` - writes `generated_agents/<name>.py`.
+- `install_dependencies` - collects deps from all specs, checks each with
   `importlib.util.find_spec`, pip-installs only what's missing.
-- `execute_agent` — runs ONE agent via `subprocess.run([sys.executable, file])`,
+- `execute_agent` - runs ONE agent via `subprocess.run([sys.executable, file])`,
   feeding JSON on stdin, capturing stdout/stderr, with a 300 s timeout.
   A non-zero exit code becomes an `[agent failed]` string instead of crashing
-  the whole pipeline — downstream agents and the merger still run.
-- `execute_all` — the pipeline loop: agent N gets a dict of outputs from
+  the whole pipeline - downstream agents and the merger still run.
+- `execute_all` - the pipeline loop: agent N gets a dict of outputs from
   agents 1..N-1.
 
-### `merger.py` — synthesis
+### `merger.py` - synthesis
 - One LLM call that receives the task + all labeled outputs and writes the
   final answer. Short-circuit: with a single agent there's nothing to merge,
   so its output is returned directly (saves a call).
 
-### `inventory.py` — lifecycle end
-- `delete_agents` — unlink the files.
-- `save_to_inventory` — move files into `inventory/<timestamp>/` and write a
+### `inventory.py` - lifecycle end
+- `delete_agents` - unlink the files.
+- `save_to_inventory` - move files into `inventory/<timestamp>/` and write a
   `TASK.txt` describing what the team was built for.
 
-### `orchestrator.py` — the conductor
+### `orchestrator.py` - the conductor
 - `handle_task(task)` calls the five phases in order and prints progress.
 - Contains **no business logic of its own** — it only sequences the modules.
   Keep it that way; it should read like the flow diagram above.
 
-### `main.py` — the user interface
+### `main.py` - the user interface
 - Validates `OPENROUTER_API_KEY` exists, loops on `input()`, prints the final
   response, then asks *delete or save?*.
 - The only module that talks to a human. Everything else is importable and
@@ -141,14 +141,14 @@ Why Pydantic + `with_structured_output`?
 - The LLM's reply is validated against the schema; malformed output raises
   instead of silently corrupting the pipeline.
 - Field descriptions (`Field(description=...)`) are sent to the model as part
-  of the schema — they are *prompt engineering*, not just docs.
+  of the schema - they are *prompt engineering*, not just docs.
 
 ---
 
 ## 5. The Generated-Agent Contract
 
 This is the most important design decision in the project. Every generated
-agent — no matter what it does — obeys the same tiny interface:
+agent — no matter what it does - obeys the same tiny interface:
 
 ```
 stdin  ──►  JSON {"task": str, "previous_outputs": {agent_name: output, ...}}
@@ -201,7 +201,7 @@ total: 2N + 1 or 2N + 2 calls
 
 Keep this in mind when tuning: the generator calls are the largest prompts
 (they embed the full template + instructions), and agent runtime calls are
-invisible to the main process — they happen inside subprocesses.
+invisible to the main process - they happen inside subprocesses.
 
 ---
 
@@ -250,7 +250,7 @@ Conventions to keep while contributing:
 3. **Executor stays AI-free.** It deals in files, processes, and strings only.
    That separation is what makes it unit-testable without an API key.
 4. **Prompts live as module-level constants** (`PLANNER_PROMPT`,
-   `GENERATOR_PROMPT`, `MERGER_PROMPT`) — easy to find, easy to diff.
+   `GENERATOR_PROMPT`, `MERGER_PROMPT`) - easy to find, easy to diff.
 5. **`orchestrator.handle_task` returns `(response, paths)`** and lets the
    caller decide about cleanup. Don't make the orchestrator ask questions;
    user interaction belongs in `main.py`.
@@ -259,7 +259,7 @@ Conventions to keep while contributing:
 
 ## 9. Ideas / Roadmap (good daily-commit material)
 
-Roughly ordered from easiest to hardest — each one is a self-contained,
+Roughly ordered from easiest to hardest - each one is a self-contained,
 committable improvement:
 
 **Small (1 commit each)**
@@ -285,7 +285,7 @@ committable improvement:
 
 **Large (multi-day)**
 - [ ] Give generated agents **tools** (web search, file reading) instead of a
-      single bare LLM call — real LangChain tool-calling agents.
+      single bare LLM call - real LangChain tool-calling agents.
 - [ ] Sandbox execution (Docker container per agent) so generated code can't
       touch your filesystem.
 - [ ] A planner that outputs a DAG (graph of dependencies) instead of a list,
