@@ -63,14 +63,14 @@ Numbered lifecycle for one task:
 One module = one responsibility. If you're adding code and can't decide where
 it goes, that usually means it deserves a new module.
 
-### `config.py` — shared setup
+### `config.py` - shared setup
 - Owns the model name, the OpenRouter base URL, and the two directories
   (`generated_agents/`, `inventory/`).
 - `get_llm()` is the **only** place an LLM client is constructed for the main
   agent. Every other module imports it. If you ever switch providers
   (OpenRouter → Anthropic → local Ollama), you change **one function**.
 
-### `planner.py` — task analysis
+### `planner.py` - task analysis
 - Defines the two Pydantic models that are the system's most important data
   structures (see §4).
 - `plan_agents(task)` makes one LLM call with
@@ -79,7 +79,7 @@ it goes, that usually means it deserves a new module.
 - Design rule enforced by the prompt: *fewest agents possible, one
   responsibility each, execution order matters*.
 
-### `generator.py` — code generation
+### `generator.py` - code generation
 - `AGENT_TEMPLATE` is the **contract skeleton** every generated agent must
   follow (see §5). It's embedded into the prompt so the LLM copies its shape.
 - `generate_agent_code(spec)` = prompt + one LLM call + strip markdown fences.
@@ -175,7 +175,7 @@ if __name__ == "__main__":
 | Dependency conflicts | contained per run | pollute the main process |
 | Simplicity | one `subprocess.run` call | `importlib` gymnastics |
 
-The contract also means agents are **language-agnostic in principle** — a
+The contract also means agents are **language-agnostic in principle** - a
 future version could generate a Node.js agent and the executor wouldn't care,
 as long as stdin/stdout behave the same.
 
