@@ -31,7 +31,7 @@ if __name__ == "__main__":
     print(run(payload["task"], payload["previous_outputs"]))
 '''
 
-GENERATOR_PROMPT = """You are a code generator. Write ONE complete Python file for the
+GENERATOR_PROMPT = """You are a smart code generator. Write ONE complete Python file for the
 specialized agent described below. Output ONLY Python code, no explanations.
 
 Agent name: {name}
