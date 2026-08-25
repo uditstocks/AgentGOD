@@ -13,7 +13,7 @@ import pytest
 import orchestrator
 from events import TaskEvents
 from executor import AgentResult, DependencyReport
-from planner import AgentSpec, Plan
+from planner import AgentSpec, Plan, canonical_role
 
 SOURCE = "def run(task, previous_outputs):\n    return 'ok'\n"
 
@@ -32,6 +32,9 @@ class Recorder(TaskEvents):
 
     def agent_build_started(self, name):
         self.log.append(("build", name))
+
+    def agent_retired(self, name, reason):
+        self.log.append(("retired", name))
 
     def agent_ready(self, name, filename, reused):
         self.log.append(("ready", name, reused))
@@ -91,11 +94,15 @@ def collaborators(monkeypatch, tmp_path):
     monkeypatch.setattr(orchestrator, "plan_agents", lambda task, usage=None: two_agent_plan())
     monkeypatch.setattr(orchestrator, "lookup", lambda name: None)
     monkeypatch.setattr(orchestrator, "record_use", lambda name: None)
-    monkeypatch.setattr(orchestrator, "remember", lambda name, role, source: True)
+    monkeypatch.setattr(orchestrator, "remember", lambda *a, **k: True)
+    # A library agent is only handed back if it still checks out; these
+    # tests are about sequencing, so the check always passes here.
+    monkeypatch.setattr(orchestrator, "reusable", lambda name: True)
+    monkeypatch.setattr(orchestrator, "forget", lambda name: True)
     monkeypatch.setattr(
         orchestrator,
         "generate_agent_code",
-        lambda spec, upstream=None, feedback=None, usage=None: SOURCE,
+        lambda spec, upstream=None, feedback=None, usage=None, task="": SOURCE,
     )
     monkeypatch.setattr(orchestrator, "save_agent_file", fake_save)
     monkeypatch.setattr(
@@ -166,8 +173,12 @@ def test_failed_agent_is_repaired_and_events_say_so(collaborators, monkeypatch):
     assert result.failures == {}
     assert ("repair", "research_agent", 1) in recorder.log
     assert ("finish", "research_agent", True) in recorder.log
-    # The repaired source replaces the broken one awaiting the keep decision.
-    assert result.pending["research_agent"] == ("gather", SOURCE)
+    # The repaired source replaces the broken one awaiting the keep decision,
+    # under the standard description of the capability rather than the
+    # planner's wording for this one task.
+    role, source = result.pending["research_agent"]
+    assert source == SOURCE
+    assert role == canonical_role("research_agent")
 
 
 def test_every_agent_failing_raises_before_merge(collaborators, monkeypatch):
@@ -179,7 +190,7 @@ def test_every_agent_failing_raises_before_merge(collaborators, monkeypatch):
     monkeypatch.setattr(
         orchestrator,
         "generate_agent_code",
-        lambda spec, upstream=None, feedback=None, usage=None: SOURCE,
+        lambda spec, upstream=None, feedback=None, usage=None, task="": SOURCE,
     )
     recorder = Recorder()
     with pytest.raises(RuntimeError, match="every agent failed"):
@@ -191,3 +202,47 @@ def test_on_agent_created_sees_every_written_file(collaborators):
     seen: list[Path] = []
     orchestrator.handle_task("do a thing", on_agent_created=seen.append)
     assert [path.stem for path in seen] == ["research_agent", "summary_agent"]
+
+
+def test_an_agent_that_failed_is_never_offered_for_the_library(collaborators, monkeypatch):
+    """A file that is known not to run must not become a free library hit."""
+
+    def one_fails(path, task, outputs, python_exe=None):
+        return failed_result(path) if path.stem == "summary_agent" else ok_result(path)
+
+    monkeypatch.setattr(orchestrator, "execute_agent", one_fails)
+    # Repair is not the point here; let it stay broken.
+    monkeypatch.setattr(
+        orchestrator,
+        "generate_agent_code",
+        lambda spec, upstream=None, feedback=None, usage=None, task="": SOURCE,
+    )
+
+    result = orchestrator.handle_task("do a thing", events=Recorder())
+
+    assert "summary_agent" in result.failures
+    assert "summary_agent" not in result.pending
+    assert "research_agent" in result.pending
+
+
+def test_the_task_is_carried_on_the_result(collaborators):
+    """The caller records it against each kept agent, for later re-checking."""
+    result = orchestrator.handle_task("write me something", events=Recorder())
+    assert result.task == "write me something"
+
+
+def test_a_library_agent_that_hardcoded_its_task_is_retired_and_rebuilt(
+    collaborators, monkeypatch
+):
+    monkeypatch.setattr(orchestrator, "lookup", lambda name: SOURCE)
+    monkeypatch.setattr(orchestrator, "reusable", lambda name: name != "summary_agent")
+    dropped: list[str] = []
+    monkeypatch.setattr(orchestrator, "forget", lambda name: dropped.append(name) or True)
+
+    recorder = Recorder()
+    result = orchestrator.handle_task("do a thing", events=recorder)
+
+    assert dropped == ["summary_agent"]
+    assert "summary_agent" in result.built
+    assert "summary_agent" not in result.reused
+    assert "research_agent" in result.reused

@@ -54,7 +54,8 @@ ALLOWED_MODULES = ALLOWED_STDLIB | ALLOWED_THIRD_PARTY
 # Builtins that turn data into code, or block on a human.
 BANNED_CALLS = frozenset({"eval", "exec", "compile", "__import__", "input", "breakpoint"})
 
-# Attribute calls that escape the process or mutate the machine.
+# Attribute calls that escape the process or mutate the machine. None of these
+# is also a method on a builtin type, so the name alone is enough to condemn.
 BANNED_ATTRIBUTES = frozenset(
     {
         "system",
@@ -65,13 +66,9 @@ BANNED_ATTRIBUTES = frozenset(
         "execv",
         "execve",
         "execl",
-        "remove",
         "unlink",
         "rmdir",
         "removedirs",
-        "rename",
-        "replace",
-        "truncate",
         "rmtree",
         "chmod",
         "chown",
@@ -79,6 +76,18 @@ BANNED_ATTRIBUTES = frozenset(
         "fork",
     }
 )
+
+# Names that destroy a file on `os`, `shutil` or a `Path`, and are ordinary
+# string or list methods on anything else.
+#
+# These were once banned outright, which was too blunt to live with: building
+# a prompt is string work, and `prompt.replace(...)` is the most natural line
+# in it. Rejecting that rejected whole agents over a method that cannot touch
+# a disk - so the receiver decides, not the name.
+FILESYSTEM_ATTRIBUTES = frozenset({"remove", "rename", "replace", "truncate"})
+
+# Roots that make one of the names above a filesystem call.
+FILESYSTEM_RECEIVERS = frozenset({"os", "shutil", "pathlib", "Path", "path", "io"})
 
 # open() modes that write.
 _WRITE_MODES = frozenset("wax+")
@@ -88,6 +97,27 @@ REQUIRED_FUNCTION = "run"
 
 def _root_module(name: str) -> str:
     return name.split(".", 1)[0]
+
+
+def _receiver_root(node: ast.expr) -> str | None:
+    """The leftmost name a call's receiver is built from.
+
+    `os.replace` -> "os", `os.path.replace` -> "os", `Path(p).replace` ->
+    "Path", `prompt.replace` -> "prompt". A receiver that is not built from a
+    plain name at all (a literal, a subscript of a call) yields None and is
+    treated as ordinary data.
+    """
+    current: ast.expr | None = node
+    while True:
+        if isinstance(current, ast.Attribute):
+            current = current.value
+        elif isinstance(current, ast.Call):
+            current = current.func
+        elif isinstance(current, ast.Subscript):
+            current = current.value
+        else:
+            break
+    return current.id if isinstance(current, ast.Name) else None
 
 
 class _Inspector(ast.NodeVisitor):
@@ -121,8 +151,15 @@ class _Inspector(ast.NodeVisitor):
                 self.problems.append(f"line {node.lineno}: {func.id}() is not allowed")
             elif func.id == "open" and self._opens_for_writing(node):
                 self.problems.append(f"line {node.lineno}: open() for writing is not allowed")
-        elif isinstance(func, ast.Attribute) and func.attr in BANNED_ATTRIBUTES:
-            self.problems.append(f"line {node.lineno}: .{func.attr}() is not allowed")
+        elif isinstance(func, ast.Attribute):
+            if func.attr in BANNED_ATTRIBUTES:
+                self.problems.append(f"line {node.lineno}: .{func.attr}() is not allowed")
+            elif func.attr in FILESYSTEM_ATTRIBUTES:
+                receiver = _receiver_root(func.value)
+                if receiver in FILESYSTEM_RECEIVERS:
+                    self.problems.append(
+                        f"line {node.lineno}: {receiver}.{func.attr}() is not allowed"
+                    )
         self.generic_visit(node)
 
     @staticmethod

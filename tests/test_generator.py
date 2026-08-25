@@ -65,7 +65,7 @@ def test_assembled_agent_is_valid_and_self_contained():
         node.names[0].name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import)
     }
     assert "langchain_openai" not in imported  # H6: no framework import
-    assert imported <= {"json", "os", "sys", "time", "urllib"}
+    assert imported <= {"json", "os", "re", "sys", "time", "urllib"}
 
 
 def test_assembled_agent_defines_the_contract():

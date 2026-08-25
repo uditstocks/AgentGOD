@@ -75,8 +75,12 @@ def _force_utf8_output() -> None:
 _STDIN_NOISE = ("﻿", "​", "ï»¿")
 
 
-def ask(message: str) -> str | None:
-    """Prompt the user. Returns None when they end the session (EOF or Ctrl-C)."""
+def ask(message: str, raw: bool = False) -> str | None:
+    """Prompt the user. Returns None when they end the session (EOF or Ctrl-C).
+
+    `raw` keeps leading whitespace, which matters only inside a pasted block:
+    stripping it would silently reindent the code or Markdown being pasted.
+    """
     try:
         answer = _ui().input(message)
     except (EOFError, KeyboardInterrupt):
@@ -84,7 +88,7 @@ def ask(message: str) -> str | None:
         return None
     for noise in _STDIN_NOISE:
         answer = answer.replace(noise, "")
-    return answer.strip()
+    return answer.rstrip() if raw else answer.strip()
 
 
 def _confirm(message: str) -> bool:
@@ -258,10 +262,12 @@ def ask_keep(result) -> None:
 
         choice = choice.lower()
         if choice in ("keep", "k", ""):
+            # The task goes in with the agent: it is what a later run checks
+            # the agent against before handing it back as reusable.
             kept = [
                 name
                 for name, (role, source) in sorted(result.pending.items())
-                if remember(name, role, source)
+                if remember(name, role, source, task=getattr(result, "task", ""))
             ]
             if kept:
                 _ui().success(f"  Kept for reuse: {', '.join(kept)}")
@@ -309,17 +315,94 @@ def report(task: str, result) -> None:
         PlainUI().run_succeeded(result, saved)
 
 
-def run_task(task: str, echo_task: bool = False) -> bool:
-    """Run one task end to end. Returns False only if the task itself failed."""
+def answer_directly(text: str) -> str | None:
+    """The reply for a line that is conversation rather than work, or None.
+
+    Nothing here calls a model. A question about this system is answered from
+    this system - the previous behaviour was to build agents to answer it, and
+    those agents, knowing nothing about AgentGod, described one that does not
+    exist.
+    """
+    import identity
+    from router import Intent, classify
+
+    intent = classify(text)
+    if intent is Intent.GREETING:
+        return identity.describe_greeting()
+    if intent is Intent.THANKS:
+        return identity.describe_thanks()
+    if intent is Intent.CAPABILITY:
+        return identity.describe_capabilities()
+    if intent is Intent.IDENTITY:
+        return identity.describe_identity()
+    if intent is Intent.LIVE_DATA:
+        return identity.describe_live_data_limit(text)
+    if intent is Intent.HELP:
+        from commands import help_text
+
+        return help_text()
+    return None
+
+
+def prepare(task: str, conversation=None) -> tuple[str, list[str], str]:
+    """Turn what the user typed into what the pipeline should receive.
+
+    Returns the prepared task, the labels of any local files that were read,
+    and the earlier request this one is continuing (empty if it stands alone).
+    Both steps are announced by the caller: reading a file sends it to a model
+    provider, and folding in context changes what the answer is about.
+    """
+    from attachments import attach
+
+    attached = attach(task)
+    labels = [item.label() for item in attached.files]
+    prepared = attached.task
+
+    carried = ""
+    if conversation is not None:
+        prepared, used = conversation.contextualise(prepared)
+        if used and conversation.last is not None:
+            carried = conversation.last.task
+    return prepared, labels, carried
+
+
+def run_task(task: str, echo_task: bool = False, conversation=None) -> bool:
+    """Run one task end to end. Returns False only if the task itself failed.
+
+    A line that is conversation never reaches the pipeline: it is answered
+    here, for nothing, and the session moves on.
+    """
     from orchestrator import handle_task
 
     ui = _ui()
+
+    reply = answer_directly(task)
+    if reply is not None:
+        ui.run_started(task, echo=echo_task)
+        ui.reply(reply)
+        return True
+
     agent_paths: list[Path] = []
     ok = False
     try:
         ui.run_started(task, echo=echo_task)
-        result = handle_task(task, on_agent_created=agent_paths.append, events=ui)
+        prepared, labels, carried = prepare(task, conversation)
+        if labels:
+            ui.attachments_read(labels)
+        if carried:
+            ui.context_carried(carried)
+
+        # The pipeline runs on `prepared`, which may carry a file's contents or
+        # an earlier exchange. The guards judge against `task` - what the user
+        # actually asked - because none of that folded-in material is theirs.
+        result = handle_task(
+            prepared, on_agent_created=agent_paths.append, events=ui, subject=task
+        )
+        # The archive records what the user asked, not the expanded form the
+        # pipeline was given - the expansion is plumbing, not the request.
         report(task, result)
+        if conversation is not None:
+            conversation.remember(task, result.response)
         ask_keep(result)
         ok = True
     except KeyboardInterrupt:
@@ -334,6 +417,42 @@ def run_task(task: str, echo_task: bool = False) -> bool:
         finally:
             cleanup(agent_paths)
     return ok
+
+
+# Openers that start a multi-line task, and the lines that end one. A single
+# input() call reads one line, so a pasted paragraph used to arrive as several
+# separate tasks - each line planned, built and billed on its own.
+BLOCK_OPENERS = frozenset({'"""', "'''", "<<<", "```"})
+BLOCK_CLOSERS = frozenset({'"""', "'''", ">>>", "```", "."})
+CONTINUATION = "\\"
+
+
+def read_block() -> str:
+    """Collect lines until a closing marker, keeping them exactly as typed."""
+    _ui().note("  (multi-line: finish with a line containing only . )")
+    lines: list[str] = []
+    while True:
+        line = ask("  | ", raw=True)
+        if line is None or line.strip() in BLOCK_CLOSERS:
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def read_input() -> str | None:
+    """One unit of user input, however many lines it takes to type."""
+    line = ask("\n" + TASK_PROMPT)
+    if line is None:
+        return None
+    if line in BLOCK_OPENERS:
+        return read_block()
+    # A trailing backslash means the sentence is not finished yet.
+    while line.endswith(CONTINUATION):
+        more = ask("  | ")
+        if more is None:
+            break
+        line = line[: -len(CONTINUATION)].rstrip() + " " + more
+    return line
 
 
 def _strip_plain_flag(args: list[str]) -> tuple[list[str], bool]:
@@ -377,15 +496,39 @@ def main() -> int:
             return 1
         return 0 if run_task(task, echo_task=True) else 1
 
+    from commands import PASTE, QUIT, handle, parse
+    from conversation import Conversation
+    from router import Intent, classify
+
     _session_banner()
+    conversation = Conversation()
     while True:
-        task = ask("\n" + TASK_PROMPT)
+        task = read_input()
         if task is None or task.lower() in QUIT_WORDS:
             _ui().farewell()
             return 0
         if not task:
             continue
-        run_task(task)
+
+        command = parse(task)
+        if command is not None:
+            output = handle(command, conversation)
+            if output == QUIT:
+                _ui().farewell()
+                return 0
+            if output != PASTE:
+                _ui().reply(output)
+                continue
+            task = read_block()
+            if not task:
+                continue
+
+        # "bye" is a farewell, not a task about the word "bye".
+        if classify(task) is Intent.FAREWELL:
+            _ui().farewell()
+            return 0
+
+        run_task(task, conversation=conversation)
 
 
 if __name__ == "__main__":

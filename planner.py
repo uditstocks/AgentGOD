@@ -87,35 +87,116 @@ class Plan(BaseModel):
 
     @model_validator(mode="after")
     def _deduplicate_names(self) -> Plan:
-        """Agent names are filenames and dict keys, so they must be unique."""
-        seen: set[str] = set()
+        """Agent names are filenames and dict keys, so they must be unique.
+
+        A repeated name with a repeated job is a planning slip, not a second
+        agent: renaming it to `summary_agent_2` would build, run and bill a
+        duplicate of the agent already in the plan, and leave a near-identical
+        twin in the library forever. Those are dropped. A repeated name with a
+        genuinely different job is kept, and renamed as before.
+        """
+        kept: list[AgentSpec] = []
+        seen: dict[str, str] = {}
         for spec in self.agents:
-            if spec.name not in seen:
-                seen.add(spec.name)
+            existing = seen.get(spec.name)
+            if existing is not None and existing == _normalise_role(spec.role):
                 continue
-            suffix = 2
-            while f"{spec.name}_{suffix}" in seen:
-                suffix += 1
-            spec.name = f"{spec.name}_{suffix}"
-            seen.add(spec.name)
+            if existing is not None:
+                suffix = 2
+                while f"{spec.name}_{suffix}" in seen:
+                    suffix += 1
+                spec.name = f"{spec.name}_{suffix}"
+            seen[spec.name] = _normalise_role(spec.role)
+            kept.append(spec)
+        self.agents = kept
         return self
+
+    @model_validator(mode="after")
+    def _order_by_stage(self) -> Plan:
+        """Put producers before the agents that consume what they produce.
+
+        Agents run in list order and each one only sees the agents before it,
+        so the order is the wiring. The model gets it wrong: one plan listed
+        `summary_agent` first and `research_agent` second while its own
+        reasoning described the opposite, and the summary ran against an empty
+        `previous_outputs`.
+
+        The sort is stable, so a plan that was already sensible is untouched.
+        """
+        self.agents = sorted(self.agents, key=lambda spec: stage_rank(spec.name, spec.role))
+        return self
+
+
+def _normalise_role(role: str) -> str:
+    """Role text reduced for comparison, so wording alone is not a difference."""
+    return re.sub(r"[^a-z0-9 ]+", "", role.lower()).strip()
 
 
 # Preferred names for the responsibilities that recur across almost every task.
 # A stable vocabulary is what makes the library hit instead of building a new
 # near-duplicate agent under a slightly different name every run.
-STANDARD_AGENTS = (
-    "research_agent - gather facts about whatever subject the task names",
-    "analysis_agent - analyse supplied material and draw out the key points",
-    "summary_agent - condense supplied material to a requested length",
-    "writer_agent - write prose in whatever form the task asks for",
-    "editor_agent - revise supplied text for clarity and correctness",
-    "outline_agent - produce a structured outline of the requested piece",
-    "comparison_agent - compare options against stated criteria",
-    "critique_agent - find weaknesses and risks in supplied material",
-    "code_agent - write or explain code",
-    "translation_agent - translate supplied text",
+STANDARD_AGENTS: dict[str, str] = {
+    "research_agent": "gather facts about whatever subject the task names",
+    "analysis_agent": "analyse supplied material and draw out the key points",
+    "summary_agent": "condense supplied material to a requested length",
+    "writer_agent": "write prose in whatever form the task asks for",
+    "editor_agent": "revise supplied text for clarity and correctness",
+    "outline_agent": "produce a structured outline of the requested piece",
+    "comparison_agent": "compare options against stated criteria",
+    "critique_agent": "find weaknesses and risks in supplied material",
+    "code_agent": "write or explain code",
+    "translation_agent": "translate supplied text",
+}
+
+# Where each kind of work sits in a pipeline. Lower runs earlier.
+#
+# The tiers are the only judgement here: something has to be gathered before
+# it can be analysed, written before it can be edited, and finished before it
+# can be condensed. Anything unrecognised is treated as the substantive middle
+# of the run, which is what a custom agent almost always is.
+GATHER_RANK = 10
+INTERPRET_RANK = 20
+PRODUCE_RANK = 30
+REVIEW_RANK = 40
+POLISH_RANK = 50
+REDUCE_RANK = 60
+
+_STAGE_KEYWORDS: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (GATHER_RANK, ("research", "gather", "collect", "fetch", "retrieve", "source", "discover")),
+    (INTERPRET_RANK, ("analysis", "analyse", "analyze", "examine", "evaluate", "assess", "interpret")),
+    (REDUCE_RANK, ("summary", "summarise", "summarize", "condense", "digest", "abstract")),
+    (POLISH_RANK, ("editor", "edit", "polish", "proofread", "refine", "format", "rewrite")),
+    (REVIEW_RANK, ("critique", "criticise", "criticize", "review", "verify", "check", "validate")),
+    (PRODUCE_RANK, ("outline", "structure", "plan")),
+    (PRODUCE_RANK, ("writer", "write", "draft", "compose", "code", "translation", "translate",
+                    "comparison", "compare", "generate", "create", "build", "design")),
 )
+
+
+def stage_rank(name: str, role: str = "") -> int:
+    """Which pipeline stage an agent belongs to, from its name then its role.
+
+    The name is checked first because it is the part the planner is steered to
+    keep stable; the role is only consulted for an agent with an invented name.
+    """
+    for haystack in (name.lower(), role.lower()):
+        if not haystack:
+            continue
+        for rank, keywords in _STAGE_KEYWORDS:
+            if any(keyword in haystack for keyword in keywords):
+                return rank
+    return PRODUCE_RANK
+
+
+def canonical_role(name: str, fallback: str = "") -> str:
+    """The reusable description of a standard agent, for the library index.
+
+    The planner writes roles for today's task ("gather facts about the benefits
+    of code review"), and that text is what a later run is shown when deciding
+    whether the agent fits. Recording the standard wording instead keeps the
+    catalogue describing capabilities rather than one old task.
+    """
+    return STANDARD_AGENTS.get(name, fallback)
 
 PLANNER_PROMPT = """You are the planner of a multi-agent system.
 You never solve tasks yourself. You decide which specialized agents are needed.
@@ -160,7 +241,9 @@ def plan_agents(task: str, usage: Usage | None = None) -> Plan:
             task=task,
             max_agents=MAX_AGENTS,
             library=describe_for_planner(),
-            standard="\n".join(f"  - {line}" for line in STANDARD_AGENTS),
+            standard="\n".join(
+                f"  - {name} - {role}" for name, role in STANDARD_AGENTS.items()
+            ),
         )
     )
 

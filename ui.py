@@ -98,6 +98,29 @@ class PlainUI(TaskEvents):
     def error(self, message: str) -> None:
         print(message)
 
+    def reply(self, text: str) -> None:
+        """Answer a conversational turn - no pipeline ran, so there is nothing to report.
+
+        Deliberately not run_succeeded(): there is no team, no cost and no
+        archive, and dressing an instant answer up as a completed run would
+        misrepresent what happened.
+        """
+        print()
+        print(text)
+
+    def attachments_read(self, labels: list[str]) -> None:
+        """Name every local file that was read into the task.
+
+        This is not decoration. The contents are about to be sent to a model
+        provider, and the user is entitled to know that before it happens.
+        """
+        for label in labels:
+            print(f"  read {label}")
+
+    def context_carried(self, previous_task: str) -> None:
+        """Say when a follow-up was answered using the exchange before it."""
+        print(f"  (continuing: {first_line(previous_task, 60)})")
+
     def farewell(self) -> None:
         print("Goodbye.")
 
@@ -147,6 +170,9 @@ class PlainUI(TaskEvents):
         print(f"  {plan.reasoning}")
         for spec in plan.agents:
             print(f"  - {spec.name}: {spec.role}")
+
+    def agent_retired(self, name: str, reason: str) -> None:
+        print(f"  retired {name} from the library: {reason}")
 
     def agent_build_started(self, name: str) -> None:
         print(f"  writing {name}...")
