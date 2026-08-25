@@ -16,6 +16,9 @@ inventory/
 runs/
 .agent_venv/
 
+# Social media captures (rendered locally, not part of the product)
+CLI SS/
+
 # OS / editor
 .DS_Store
 Thumbs.db
