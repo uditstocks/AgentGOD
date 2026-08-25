@@ -1,4 +1,4 @@
-# Secrets — never commit real keys
+# Secrets - never commit real keys
 .env
 .env.*
 !.env.example
@@ -13,6 +13,7 @@ env/
 # Runtime artifacts of the agent creator
 generated_agents/
 inventory/
+.agent_venv/
 
 # OS / editor
 .DS_Store

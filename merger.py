@@ -1,11 +1,18 @@
 """Step 6: Merge all agent outputs into one final response for the user."""
 
-from config import get_llm
+from __future__ import annotations
+
+from config import MAX_CHARS_PER_INPUT, Usage, get_llm, response_text
 
 MERGER_PROMPT = """You are the coordinator of a multi-agent system.
 Several specialized agents each completed one part of the user's task.
 Merge their outputs into ONE clear, complete final answer for the user.
-Do not mention the agents or the process — just deliver the answer.
+
+Rules:
+- Obey every explicit constraint in the user's task exactly: length limits,
+  word counts, format, structure and tone.
+- Do not mention the agents or the process - just deliver the answer.
+- Add nothing the agent outputs do not support.
 
 User task:
 {task}
@@ -15,12 +22,29 @@ Agent outputs:
 """
 
 
-def merge_outputs(task: str, outputs: dict[str, str]) -> str:
-    """Combine every agent's output into a single final response."""
-    if len(outputs) == 1:
-        # One agent means nothing to merge — return its output directly.
-        return next(iter(outputs.values()))
+def _format_outputs(outputs: dict[str, str]) -> str:
+    """Label each agent's result and cap it, so the prompt cannot run away."""
+    sections = []
+    for name, output in outputs.items():
+        text = output.strip()
+        if len(text) > MAX_CHARS_PER_INPUT:
+            text = text[:MAX_CHARS_PER_INPUT] + "\n[...truncated...]"
+        sections.append(f"--- {name} ---\n{text}")
+    return "\n\n".join(sections)
 
-    formatted = "\n\n".join(f"--- {name} ---\n{output}" for name, output in outputs.items())
-    response = get_llm().invoke(MERGER_PROMPT.format(task=task, outputs=formatted))
-    return response.content
+
+def merge_outputs(task: str, outputs: dict[str, str], usage: Usage | None = None) -> str:
+    """Combine every agent's output into a single final response.
+
+    The merger always runs, including for a single agent: it is the only
+    stage that still holds the user's original wording, so it is what
+    enforces the task's own formatting constraints.
+    """
+    if not outputs:
+        raise ValueError("no agent produced an output to merge")
+
+    llm = get_llm()
+    response = llm.invoke(MERGER_PROMPT.format(task=task, outputs=_format_outputs(outputs)))
+    if usage is not None:
+        usage.record(response)
+    return response_text(response).strip()

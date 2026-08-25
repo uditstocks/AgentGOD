@@ -1,4 +1,4 @@
-# Architecture — Dynamic Agent Creator
+# Architecture - Dynamic Agent Creator
 
 This document explains how the system is designed, why it is designed that way,
 and everything you need to know to extend or rebuild it by hand.
@@ -35,13 +35,16 @@ single-purpose programs that exist only for the lifetime of one task
                     ┌─────────────────┐
                     │ orchestrator.py │  THE permanent Main Agent
                     └────────┬────────┘
-          ┌──────────┬───────┼──────────┬─────────────┐
-          ▼          ▼       ▼          ▼             ▼
-     planner.py  generator.py  executor.py   merger.py   inventory.py
-     (1 LLM call) (1 LLM call   (0 LLM calls, (1 LLM call) (0 LLM calls,
-      task →       per agent,    subprocess    outputs →    file ops)
-      Plan         spec →        per agent)    final
-      object)      .py file)                   answer)
+       ┌──────────┬──────────┼──────────┬─────────────┐
+       ▼          ▼          ▼          ▼             ▼
+  planner.py  generator.py  executor.py  merger.py  inventory.py
+  (1 LLM call) (1+ calls     (0 LLM calls, (1 LLM call) (0 LLM calls,
+   task →       per agent,    subprocess    outputs →    file ops)
+   Plan)        spec →        per agent)    final
+                .py file)                   answer
+                    │
+                    ▼
+              codeguard.py   (0 LLM calls - validates generated code)
 ```
 
 Numbered lifecycle for one task:
@@ -49,11 +52,12 @@ Numbered lifecycle for one task:
 | Step | Module | What happens | LLM used? |
 |---|---|---|---|
 | 1 | `planner.py` | Task → `Plan` (list of `AgentSpec`) | ✅ structured output |
-| 2 | `generator.py` | Each `AgentSpec` → Python source code | ✅ one call per agent |
+| 2 | `generator.py` | Each `AgentSpec` → Python source | ✅ one call per agent (more if rejected) |
+| 2b | `codeguard.py` | Reject unsafe/malformed source before it lands | ❌ |
 | 3 | `executor.py` | Source → file in `generated_agents/` | ❌ |
-| 4 | `executor.py` | pip-install missing dependencies | ❌ |
+| 4 | `executor.py` | Install vetted pip packages into an isolated venv | ❌ |
 | 5 | `executor.py` | Run each agent as a subprocess, in order | ❌ (the *agents* call the LLM) |
-| 6 | `merger.py` | All outputs → one final response | ✅ (skipped if 1 agent) |
+| 6 | `merger.py` | All outputs → one final response | ✅ always |
 | 7 | `inventory.py` | Delete files, or move to `inventory/` | ❌ |
 
 ---
@@ -63,126 +67,173 @@ Numbered lifecycle for one task:
 One module = one responsibility. If you're adding code and can't decide where
 it goes, that usually means it deserves a new module.
 
-### `config.py` — shared setup
-- Loads `.env`, then owns the model name, the OpenRouter base URL, and the two
-  directories (`generated_agents/`, `inventory/`).
+### `config.py` - shared setup
+- Loads `.env`, then owns the model name, the OpenRouter URLs, the directories,
+  and every tunable limit (agent timeout, retry counts, plan size).
 - `get_llm()` is the **only** place an LLM client is constructed for the main
-  agent. Every other module imports it. If you ever switch providers
-  (OpenRouter → Anthropic → local Ollama), you change **one function**.
+  agent. `temperature` defaults to `0`: planning and code generation are
+  structural decisions and must be reproducible run to run.
+- `response_text()` normalises a reply to `str`. langchain-core 1.x may return
+  either a string or a list of content blocks, so **never touch `.content`
+  directly**.
+- `Usage` accumulates tokens and estimates cost.
 
-### `planner.py` — task analysis
+### `planner.py` - task analysis
 - Defines the two Pydantic models that are the system's most important data
   structures (see §4).
 - `plan_agents(task)` makes one LLM call with
-  `llm.with_structured_output(Plan)`, which forces the model to return a
-  validated `Plan` object instead of free text. No JSON parsing by hand.
-- Design rule enforced by the prompt: *fewest agents possible, one
-  responsibility each, execution order matters*.
+  `llm.with_structured_output(Plan, include_raw=True)`. `include_raw` keeps the
+  underlying message reachable so the planning call's tokens are accounted for.
+- **The plan is a trust boundary.** An `AgentSpec.name` becomes a filename and a
+  dict key, so it is sanitised to a safe snake_case identifier
+  (`"../../../pwned"` → `"pwned"`), Windows device names are avoided, duplicates
+  are disambiguated, and the agent count is bounded by the schema - not merely
+  requested in the prompt.
 
-### `generator.py` — code generation
-- `AGENT_TEMPLATE` is the **contract skeleton** every generated agent must
-  follow (see §5). It's embedded into the prompt so the LLM copies its shape.
-- `generate_agent_code(spec)` = prompt + one LLM call + strip markdown fences.
-- Note the double braces `{{ }}` inside `AGENT_TEMPLATE` — that's how you
-  escape literal braces in a Python `.format()` string. Classic gotcha.
+### `generator.py` - code generation
+- `AGENT_HEADER` is a **fixed, trusted runtime** - imports, the OpenRouter call,
+  the stdin/stdout contract. The LLM never writes it, so it cannot drift.
+- The LLM writes only `run()` (plus small helpers). `assemble_agent()` splices
+  that into the header. This is why generated agents are *always* structurally
+  correct and *always* standard-library only.
+- The generator prompt states the **exact `previous_outputs` keys** this agent
+  will receive. Without that the model invents key names, `.get()` returns the
+  default, and the agent silently runs on the task string alone.
+- `generate_agent_code()` retries on rejection, feeding `codeguard`'s complaints
+  back to the model. Malformed code never reaches disk.
 
-### `executor.py` — filesystem + processes (no AI here)
-- `save_agent_file` — writes `generated_agents/<name>.py`.
-- `install_dependencies` — collects deps from all specs, checks each with
-  `importlib.util.find_spec`, pip-installs only what's missing.
-- `execute_agent` — runs ONE agent via `subprocess.run([sys.executable, file])`,
-  feeding JSON on stdin, capturing stdout/stderr, with a 300 s timeout.
-  A non-zero exit code becomes an `[agent failed]` string instead of crashing
-  the whole pipeline — downstream agents and the merger still run.
-- `execute_all` — the pipeline loop: agent N gets a dict of outputs from
-  agents 1..N-1.
+### `codeguard.py` - static validation (no AI, no I/O)
+- `ast.parse` the source; confirm `run(task, previous_outputs)` exists with the
+  right arity and is not async.
+- Imports are an **allowlist**, not a denylist - an unknown module is refused.
+- Refuses `eval`/`exec`/`compile`/`__import__`, process and filesystem-mutating
+  attribute calls (`os.system`, `os.remove`, …), and `open()` in any write mode.
+- Fully unit-testable without an API key.
 
-### `merger.py` — synthesis
-- One LLM call that receives the task + all labeled outputs and writes the
-  final answer. Short-circuit: with a single agent there's nothing to merge,
-  so its output is returned directly (saves a call).
+### `executor.py` - filesystem + processes (no AI here)
+- `save_agent_file` - writes `generated_agents/<name>.py`, asserting the
+  resolved path is still inside that directory.
+- `install_dependencies` - only packages in `ALLOWED_PACKAGES` are installed,
+  and they go into an isolated venv (`.agent_venv/`), never the interpreter
+  running this program. Anything else is refused and reported. Installed
+  *distributions* are probed via `importlib.metadata`, because pip names and
+  import names differ (`beautifulsoup4` → `bs4`).
+- `execute_agent` - runs ONE agent via `subprocess.run`, feeding JSON on stdin.
+  **UTF-8 is forced in both directions** (`PYTHONUTF8`/`PYTHONIOENCODING` in the
+  child, `errors="replace"` in the parent); without it a piped child on Windows
+  writes cp1252, the parent decodes UTF-8, and the output is lost. Every failure
+  mode - crash, hang, unstartable, silent - becomes an `AgentResult`, never an
+  exception.
+- `execute_all` - the pipeline loop: agent N gets the outputs of agents 1..N-1.
+  **Only successful outputs are forwarded.**
 
-### `inventory.py` — lifecycle end
-- `delete_agents` — unlink the files.
-- `save_to_inventory` — move files into `inventory/<timestamp>/` and write a
-  `TASK.txt` describing what the team was built for.
+### `merger.py` - synthesis
+- One LLM call that receives the task + all labelled outputs and writes the
+  final answer. It **always runs**, including for a single agent: it is the only
+  stage that still holds the user's original wording, so it is what enforces the
+  task's own constraints (word counts, format, tone).
 
-### `orchestrator.py` — the conductor
-- `handle_task(task)` calls the five phases in order and prints progress.
-- Contains **no business logic of its own** — it only sequences the modules.
-  Keep it that way; it should read like the flow diagram above.
+### `inventory.py` - lifecycle end
+- `delete_agents` - unlink the files, tolerating ones already gone.
+- `save_to_inventory` - move files into a **unique** `inventory/<timestamp>/`
+  and write a `TASK.txt` describing what the team was built for.
 
-### `main.py` — the user interface
-- Validates `OPENROUTER_API_KEY` exists, loops on `input()`, prints the final
-  response, then asks *delete or save?*.
-- The only module that talks to a human. Everything else is importable and
-  testable without a terminal.
+### `orchestrator.py` - the conductor
+- `handle_task(task)` calls the five phases in order, prints progress, and
+  returns a `TaskResult`.
+- It owns **retry policy** (`_run_with_repair`): a failed agent is regenerated
+  from its own stderr, up to `AGENT_REPAIR_ATTEMPTS` times. The generator
+  already has the code and the traceback, so a crash is a repairable event
+  rather than lost work.
+- No other business logic of its own - it should read like the flow diagram.
+
+### `main.py` - the user interface
+- Validates `OPENROUTER_API_KEY`, loops on `input()`, prints the final response,
+  then asks *delete or save?*.
+- One failed task must not end the session: `handle_task` is wrapped, and
+  cleanup runs in a `finally` so a mid-run failure still offers to remove the
+  files it wrote. EOF/Ctrl-C end the session cleanly instead of raising.
+- The only module that talks to a human.
 
 ---
 
 ## 4. Key Data Structures
 
-These two Pydantic models are the "wire format" between planning and
-everything downstream. Change them and you change the whole system.
+These models are the "wire format" between planning and everything downstream.
 
 ```python
 class AgentSpec(BaseModel):
-    name: str                 # snake_case, becomes the filename: <name>.py
-    role: str                 # one sentence, used in prompts and logs
-    instructions: str         # detailed brief the generated agent must follow
-    dependencies: list[str]   # extra pip packages (usually empty)
+    name: str  # sanitised snake_case; becomes <name>.py and a dict key
+    role: str  # one sentence, used in prompts and logs
+    instructions: str  # detailed brief the generated agent must follow
+    dependencies: list[str]  # extra pip packages (usually empty; allowlist-gated)
+
 
 class Plan(BaseModel):
-    reasoning: str            # why the task was split this way
-    agents: list[AgentSpec]   # IN EXECUTION ORDER (1–4 agents)
+    agents: list[AgentSpec]  # IN EXECUTION ORDER, 1..MAX_AGENTS (schema-enforced)
+    reasoning: str  # describes the list above
 ```
+
+`agents` is declared **before** `reasoning` on purpose: structured output is
+generated in field order, so the model describes the team it actually emitted
+instead of committing in prose to agents it then omits.
 
 Why Pydantic + `with_structured_output`?
 - The LLM's reply is validated against the schema; malformed output raises
   instead of silently corrupting the pipeline.
 - Field descriptions (`Field(description=...)`) are sent to the model as part
-  of the schema — they are *prompt engineering*, not just docs.
+  of the schema - they are *prompt engineering*, not just docs.
+- Validators are where untrusted model output is made safe, once, for everyone
+  downstream.
+
+`handle_task` returns a `TaskResult`: the merged `response`, the `agent_paths`
+(so the caller decides about cleanup), any `failures`, and token/cost totals.
 
 ---
 
 ## 5. The Generated-Agent Contract
 
 This is the most important design decision in the project. Every generated
-agent — no matter what it does — obeys the same tiny interface:
+agent - no matter what it does - obeys the same tiny interface:
 
 ```
 stdin  ──►  JSON {"task": str, "previous_outputs": {agent_name: output, ...}}
 stdout ──►  plain-text result
+stderr ──►  diagnostics + a "__AGENT_USAGE__ {...}" token report
 exit 0 ──►  success        exit != 0 ──►  failure (stderr = reason)
 ```
 
-And structurally, every generated file must contain:
+The payload is written with `json.dumps(..., ensure_ascii=True)`, so stdin is
+pure ASCII on the wire and cannot be mangled by the child's encoding.
 
-```python
-def run(task: str, previous_outputs: dict) -> str: ...
+Structurally, every generated file is `AGENT_HEADER` + the model's `run()` +
+`AGENT_FOOTER`. The header is **standard library only** (`json`, `os`, `sys`,
+`time`, `urllib`, `pathlib`) and talks to OpenRouter over plain HTTPS. Two
+consequences worth knowing:
 
-if __name__ == "__main__":
-    payload = json.loads(sys.stdin.read())
-    print(run(payload["task"], payload["previous_outputs"]))
-```
+- **Startup is ~0.05 s, not ~6 s.** Importing LangChain inside every agent
+  subprocess used to dominate wall-clock time.
+- **An archived agent runs on its own.** `api_key()` falls back to a `.env` file
+  up the directory tree, so an agent in `inventory/` works with nothing
+  installed.
 
 **Why a subprocess contract instead of `import`-ing the generated module?**
 
 | Concern | Subprocess (chosen) | Dynamic import |
 |---|---|---|
-| A buggy agent crashes the app | ❌ isolated, becomes an error string | ✅ can take the process down |
-| Hangs / infinite loops | killed by `timeout=` | needs threads to interrupt |
+| A buggy agent crashes the app | ❌ isolated, becomes an `AgentResult` | ✅ can take the process down |
+| Hangs / infinite loops | killed by `timeout=`, caught | needs threads to interrupt |
 | Dependency conflicts | contained per run | pollute the main process |
 | Simplicity | one `subprocess.run` call | `importlib` gymnastics |
 
-The contract also means agents are **language-agnostic in principle** — a
+The contract also means agents are **language-agnostic in principle** - a
 future version could generate a Node.js agent and the executor wouldn't care,
 as long as stdin/stdout behave the same.
 
 **Communication model:** a sequential pipeline. Agent 3 sees
-`{"research_agent": "...", "analysis_agent": "..."}` in `previous_outputs`.
-There is no shared memory, no message bus — just data passed forward. Simple,
-debuggable, and enough for V0.
+`{"research_agent": "...", "analysis_agent": "..."}` in `previous_outputs`, and
+the generator was told those exact key names. There is no shared memory and no
+message bus - just data passed forward.
 
 ---
 
@@ -192,29 +243,33 @@ For a task planned with N agents:
 
 ```
 1 call   planner        (structured output)
-N calls  generator      (one per agent, biggest token spend)
+N calls  generator      (one per agent; +1 per rejected or repaired attempt)
 N calls  inside agents  (each generated agent calls the LLM itself at runtime)
-0–1 call merger         (skipped when N == 1)
+1 call   merger         (always - it enforces the task's own constraints)
 ─────────────────────────
-total: 2N + 1 or 2N + 2 calls
+total: 2N + 2 calls, plus retries
 ```
 
-Keep this in mind when tuning: the generator calls are the largest prompts
-(they embed the full template + instructions), and agent runtime calls are
-invisible to the main process — they happen inside subprocesses.
+Every call is accounted for. The main agent's tokens come from
+`response.usage_metadata`; each generated agent reports its own usage on stderr,
+which the executor parses off. `TaskResult.cost_summary()` totals both.
 
 ---
 
 ## 7. Error-Handling Philosophy
 
-- **Planner/generator failures** (bad API key, network, schema mismatch) →
-  raise and crash loudly. If planning fails there is nothing sensible to do.
-- **Agent runtime failures** → soft-fail. The executor converts a non-zero
-  exit into `"[name failed]\n<stderr>"` and the pipeline continues; the merger
-  then works with whatever succeeded. Rationale: one broken generated agent
-  shouldn't discard the work of three good ones.
-- **Dependency install failures** → `subprocess.run(..., check=True)` raises.
-  Better to stop than run agents that will import-error anyway.
+- **Planner/codegen failures** (bad key, network, schema mismatch, code that
+  cannot be made valid) → raise. `main.py` catches, reports, and keeps the REPL
+  alive; the files written so far are still offered for cleanup.
+- **Agent runtime failures** → soft-fail into an `AgentResult`, then **repair**:
+  the code and stderr go back to the generator for up to
+  `AGENT_REPAIR_ATTEMPTS` regenerations. If it still fails, that agent is
+  recorded in `TaskResult.failures` and excluded - its stderr is **never**
+  passed downstream or into the merger as if it were a result.
+- **Every agent failed** → raise, rather than merge nothing into a confident
+  hallucination.
+- **Dependency problems** → never fatal. Refused and failed packages are
+  reported; the agent that needed them will fail and be repaired or excluded.
 
 ---
 
@@ -223,22 +278,21 @@ invisible to the main process — they happen inside subprocesses.
 ```
 AgentGOD/
 ├── main.py               # entry point (only module with input()/print UI)
-├── orchestrator.py       # sequences the pipeline, no logic of its own
-├── planner.py            # LLM: task → Plan
-├── generator.py          # LLM: AgentSpec → source code
+├── orchestrator.py       # sequences the pipeline + retry policy
+├── planner.py            # LLM: task → Plan (and the trust boundary)
+├── generator.py          # LLM: AgentSpec → source code (trusted header + run())
+├── codeguard.py          # static validation of generated code
 ├── executor.py           # files, pip, subprocesses (no LLM)
 ├── merger.py             # LLM: outputs → final answer
 ├── inventory.py          # delete/archive (no LLM)
-├── config.py             # model, key, paths — the only provider-aware file
+├── config.py             # model, key, paths, limits - the only provider-aware file
+├── tests/                # pytest suite; needs no API key
 ├── generated_agents/     # scratch space, contents are disposable
-│   └── <agent_name>.py
 ├── inventory/            # user-kept teams
-│   └── 20260709_183000/
-│       ├── research_agent.py
-│       └── TASK.txt
-├── .env                  # your real key — gitignored, never committed
+├── .agent_venv/          # isolated interpreter, created only if a task needs pip
+├── .env                  # your real key - gitignored, never committed
 ├── .env.example          # committed template
-├── .gitignore
+├── pyproject.toml        # pytest + ruff configuration
 ├── requirements.txt
 ├── README.md
 └── ARCHITECTURE.md       # this file
@@ -246,66 +300,79 @@ AgentGOD/
 
 Conventions to keep while contributing:
 
-1. **Agent name == filename.** `AgentSpec.name` must stay a valid Python
-   identifier because it becomes `<name>.py` and a key in `previous_outputs`.
+1. **Agent name == filename == `previous_outputs` key.** Sanitise it in
+   `planner.safe_agent_name`, nowhere else.
 2. **`config.get_llm()` is the single LLM factory.** Never construct
    `ChatOpenAI` anywhere else in the main codebase.
-3. **Executor stays AI-free.** It deals in files, processes, and strings only.
-   That separation is what makes it unit-testable without an API key.
+3. **Executor and codeguard stay AI-free.** They deal in files, processes,
+   strings and syntax trees only. That separation is what makes the test suite
+   runnable without an API key.
 4. **Prompts live as module-level constants** (`PLANNER_PROMPT`,
-   `GENERATOR_PROMPT`, `MERGER_PROMPT`) — easy to find, easy to diff.
-5. **`orchestrator.handle_task` returns `(response, paths)`** and lets the
-   caller decide about cleanup. Don't make the orchestrator ask questions;
-   user interaction belongs in `main.py`.
+   `GENERATOR_PROMPT`, `MERGER_PROMPT`) - easy to find, easy to diff.
+5. **Never read `response.content` directly** - use `config.response_text()`.
+6. **`orchestrator.handle_task` returns a `TaskResult`** and lets the caller
+   decide about cleanup. Don't make the orchestrator ask questions; user
+   interaction belongs in `main.py`.
+7. **Anything an LLM produces is untrusted input** until a validator has seen
+   it. Names go through `safe_agent_name`, code through `codeguard`, packages
+   through `ALLOWED_PACKAGES`.
 
 ---
 
-## 9. Ideas / Roadmap (good daily-commit material)
+## 9. Security Model
 
-Roughly ordered from easiest to hardest — each one is a self-contained,
-committable improvement:
+Generated code is executed on your machine. The defences, in order:
+
+1. **Names** are sanitised, so a plan cannot write outside `generated_agents/`.
+2. **Code** is `ast`-validated: allowlisted imports only, no `eval`/`exec`, no
+   shelling out, no writing files.
+3. **Packages** are allowlisted and installed into an isolated venv.
+4. **Execution** is a subprocess with a hard timeout.
+
+What this does **not** do: it is static validation, not a sandbox. A determined
+prompt-injection payload that stays within the allowlist can still make network
+calls (agents need HTTPS to reach OpenRouter). **Treat the task string as a
+trust boundary** - the roadmap's Docker-per-agent item is the real fix.
+
+---
+
+## 10. Ideas / Roadmap
 
 **Small (1 commit each)**
 - [ ] `--task "..."` CLI argument so it runs non-interactively (`argparse`).
-- [ ] Log each run (task, plan, timings) to a `runs.log` or JSON file.
-- [ ] Colored terminal output for the 5 phases.
-- [ ] Configurable timeout / model via a `.env` file (`python-dotenv`).
-- [ ] Show token/cost estimates per run (OpenRouter returns usage info).
+- [ ] Log each run (task, plan, timings, cost) to a `runs.log` or JSON file.
+- [ ] Colored terminal output for the five phases.
 
 **Medium (a few commits each)**
-- [ ] **Retry loop for broken agents**: if an agent exits non-zero, feed the
-      code + stderr back to the generator LLM and ask for a fix (max 2 retries).
-      This is the single highest-value improvement.
-- [ ] Validate generated code before running: `ast.parse()` it, check that
-      `run(` exists, regenerate if not.
 - [ ] **Inventory reuse**: before planning, search `inventory/*/TASK.txt` for a
-      similar past task and offer to rerun that saved team instead of
-      generating a new one.
-- [ ] Parallel execution: let the planner mark agents as independent, run
-      those with `concurrent.futures`, keep dependent ones sequential.
-- [ ] Unit tests: `executor.py` and `inventory.py` are pure-Python — test them
-      with a fake agent file (a script that echoes stdin). No API key needed.
+      similar past task and offer to rerun that saved team.
+- [ ] **Parallel execution**: let the planner mark agents as independent, run
+      those with `concurrent.futures`, keep dependent ones sequential. Needs a
+      `depends_on` field on `AgentSpec` - be careful not to reintroduce silent
+      data loss when a dependency is mis-declared.
+- [ ] Stream agent output instead of buffering it to completion.
 
 **Large (multi-day)**
 - [ ] Give generated agents **tools** (web search, file reading) instead of a
-      single bare LLM call — real LangChain tool-calling agents.
+      single bare LLM call.
 - [ ] Sandbox execution (Docker container per agent) so generated code can't
-      touch your filesystem.
-- [ ] A planner that outputs a DAG (graph of dependencies) instead of a list,
-      with a topological-sort executor.
+      touch your filesystem or network freely.
+- [ ] A planner that outputs a DAG instead of a list, with a topological-sort
+      executor.
 - [ ] Simple web UI (FastAPI + one HTML page) replacing the CLI.
 
 ---
 
-## 10. Concepts You'll Practice Here
-
-For learning purposes, this project touches:
+## 11. Concepts You'll Practice Here
 
 - **LLM orchestration**: prompt design, structured output, multi-step chains.
-- **Pydantic**: schemas as both validation *and* prompt engineering.
-- **Metaprogramming**: a program that writes, saves, and runs other programs.
-- **`subprocess`**: stdin/stdout piping, exit codes, timeouts, isolation.
-- **Filesystem hygiene**: `pathlib`, atomic-ish moves, scratch vs. archive dirs.
+- **Pydantic**: schemas as validation, prompt engineering, *and* a security
+  boundary.
+- **Metaprogramming**: a program that writes, validates, saves and runs other
+  programs.
+- **`ast`**: treating generated code as data before treating it as code.
+- **`subprocess`**: stdin/stdout piping, exit codes, timeouts, encodings.
+- **Filesystem hygiene**: `pathlib`, containment checks, scratch vs. archive.
 - **Separation of concerns**: UI / orchestration / AI calls / IO in separate
-  modules — notice how only `main.py` talks to the user and only `config.py`
-  knows which provider is used.
+  modules - only `main.py` talks to the user, only `config.py` knows the
+  provider, and only `executor.py` touches the filesystem.
