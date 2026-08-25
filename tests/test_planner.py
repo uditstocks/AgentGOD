@@ -10,7 +10,9 @@ from planner import AgentSpec, Plan, safe_agent_name, upstream_names
 
 
 def spec(name: str = "research_agent", **kwargs) -> AgentSpec:
-    return AgentSpec(name=name, role="r", instructions="i", **kwargs)
+    fields = {"role": "r", "instructions": "i"}
+    fields.update(kwargs)
+    return AgentSpec(name=name, **fields)
 
 
 # --- C4: names become filenames, so they must be safe --------------------------
@@ -70,16 +72,97 @@ def test_plan_at_the_limit_is_accepted():
 # --- M2: names are dict keys and filenames, so they must be unique --------------
 
 
-def test_duplicate_names_are_disambiguated():
+def test_a_repeated_agent_with_the_same_job_is_dropped():
+    """The same name and the same role twice is a planning slip, not a team.
+
+    Renaming it to `writer_2` would generate, run and bill a second copy of an
+    agent already in the plan, and leave a near-identical twin in the library
+    for good. One real run did exactly that and ended up with both
+    `summary_agent` and `summary_agent_2` doing the same thing.
+    """
     plan = Plan(agents=[spec("writer"), spec("writer"), spec("writer")], reasoning="r")
+    assert [agent.name for agent in plan.agents] == ["writer"]
+
+
+def test_a_repeated_name_with_a_different_job_is_kept_and_renamed():
+    plan = Plan(
+        agents=[
+            spec("writer", role="write the introduction"),
+            spec("writer", role="write the conclusion"),
+        ],
+        reasoning="r",
+    )
     names = [agent.name for agent in plan.agents]
-    assert names == ["writer", "writer_2", "writer_3"]
+    assert names == ["writer", "writer_2"]
     assert len(set(names)) == len(names)
 
 
-def test_duplicates_created_by_sanitising_are_also_split():
+def test_duplicates_created_by_sanitising_are_also_resolved():
     plan = Plan(agents=[spec("Writer Agent"), spec("writer agent")], reasoning="r")
-    assert [agent.name for agent in plan.agents] == ["writer_agent", "writer_agent_2"]
+    assert [agent.name for agent in plan.agents] == ["writer_agent"]
+
+
+def test_wording_alone_is_not_a_different_job():
+    """'Condense the findings' and 'condense the findings!' are one agent."""
+    plan = Plan(
+        agents=[
+            spec("summary_agent", role="Condense the findings"),
+            spec("summary_agent", role="condense the findings!"),
+        ],
+        reasoning="r",
+    )
+    assert [agent.name for agent in plan.agents] == ["summary_agent"]
+
+
+# --- agents must run in an order where their inputs already exist ---------------
+
+
+def test_a_reducer_listed_first_is_moved_after_its_producer():
+    """The real defect: summary_agent ran before research_agent and summarised nothing."""
+    plan = Plan(
+        agents=[spec("summary_agent", role="condense"), spec("research_agent", role="gather")],
+        reasoning="research feeds summary",
+    )
+    assert [agent.name for agent in plan.agents] == ["research_agent", "summary_agent"]
+
+
+def test_a_sensible_order_is_left_alone():
+    ordered = ["research_agent", "analysis_agent", "writer_agent", "editor_agent"]
+    plan = Plan(agents=[spec(name) for name in ordered], reasoning="r")
+    assert [agent.name for agent in plan.agents] == ordered
+
+
+def test_an_unrecognised_agent_sorts_with_the_work_not_the_review():
+    plan = Plan(
+        agents=[
+            spec("summary_agent", role="condense"),
+            spec("bespoke_thing", role="do something unusual"),
+            spec("research_agent", role="gather"),
+        ],
+        reasoning="r",
+    )
+    assert [agent.name for agent in plan.agents] == [
+        "research_agent",
+        "bespoke_thing",
+        "summary_agent",
+    ]
+
+
+def test_stage_rank_falls_back_to_the_role_when_the_name_is_invented():
+    from planner import stage_rank
+
+    assert stage_rank("zeta_agent", "gather facts about the subject") == stage_rank("research_agent")
+    assert stage_rank("omega_agent", "condense it all down") == stage_rank("summary_agent")
+
+
+def test_canonical_role_replaces_a_task_specific_description():
+    """The library index must describe a capability, not one old task."""
+    from planner import canonical_role
+
+    assert canonical_role("summary_agent", "condense the code review findings") == (
+        "condense supplied material to a requested length"
+    )
+    assert canonical_role("bespoke_agent", "its own description") == "its own description"
 
 
 # --- M3: agents are generated before the prose that describes them --------------

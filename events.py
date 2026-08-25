@@ -31,6 +31,9 @@ class TaskEvents:
     def agent_build_started(self, name: str) -> None:
         """Code generation began for one agent (a library miss)."""
 
+    def agent_retired(self, name: str, reason: str) -> None:
+        """A library agent was dropped rather than reused, and will be rebuilt."""
+
     def agent_ready(self, name: str, filename: str, reused: bool) -> None:
         """One agent's file is on disk - reclaimed from the library, or newly written."""
 

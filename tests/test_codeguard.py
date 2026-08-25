@@ -107,3 +107,55 @@ def test_non_literal_open_mode_is_refused():
 def test_every_problem_is_reported_not_just_the_first():
     source = "import socket\nimport subprocess\n\n\ndef run(a, b):\n    return eval(a)\n"
     assert len(check_agent_source(source)) >= 3
+
+
+# --- a filesystem name is only a filesystem call on a filesystem receiver ------
+#
+# `.replace()` was once banned outright. Building a prompt is string work, and
+# `prompt.replace(...)` is the most natural line in it, so whole agents were
+# being rejected over a method that cannot touch a disk.
+
+
+def _probe(line: str) -> list[str]:
+    source = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "def run(task, previous_outputs):\n"
+        f"    {line}\n"
+        "    return ''\n"
+    )
+    return check_agent_source(source)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'prompt = task.replace("a", "b")',
+        'text = "x".replace("x", "y")',
+        "items = [1]; items.remove(1)",
+        'parts = task.split(","); parts.remove("x")',
+    ],
+)
+def test_string_and_list_methods_are_allowed(line):
+    assert _probe(line) == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'os.replace("a", "b")',
+        'os.remove("a")',
+        'os.rename("a", "b")',
+        'Path("a").replace("b")',
+        'os.path.replace("a", "b")',
+    ],
+)
+def test_the_same_names_are_refused_on_a_filesystem_receiver(line):
+    assert _probe(line)
+
+
+@pytest.mark.parametrize(
+    "line", ['os.unlink("a")', 'os.system("x")', 'os.rmdir("a")', 'os.chmod("a", 0)']
+)
+def test_names_that_are_only_ever_filesystem_calls_stay_banned_outright(line):
+    assert _probe(line)

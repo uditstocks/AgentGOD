@@ -24,9 +24,9 @@ from executor import (
     save_agent_file,
 )
 from generator import generate_agent_code
-from library import lookup, record_use, remember
+from library import forget, lookup, record_use, remember, reusable
 from merger import merge_outputs
-from planner import AgentSpec, Plan, plan_agents, upstream_names
+from planner import AgentSpec, Plan, canonical_role, plan_agents, upstream_names
 
 PHASES = (
     "Planning agents",
@@ -43,6 +43,10 @@ class TaskResult:
 
     response: str
     plan: Plan | None = None
+    # The task exactly as the pipeline received it. Carried so the caller can
+    # record what each kept agent was built for, which is what makes a later
+    # reusability check possible.
+    task: str = ""
     agent_paths: list[Path] = field(default_factory=list)
     failures: dict[str, str] = field(default_factory=dict)
     usage: Usage = field(default_factory=Usage)
@@ -75,6 +79,7 @@ def _run_with_repair(
     upstream: list[str],
     usage: Usage,
     events: TaskEvents,
+    subject: str,
 ) -> tuple[AgentResult, str | None]:
     """Execute one agent, regenerating it from its own error output on failure.
 
@@ -88,7 +93,9 @@ def _run_with_repair(
             break
         events.agent_repairing(spec.name, attempt, AGENT_REPAIR_ATTEMPTS, result.error)
         try:
-            code = generate_agent_code(spec, upstream, feedback=result.error, usage=usage)
+            code = generate_agent_code(
+                spec, upstream, feedback=result.error, usage=usage, task=subject
+            )
         except (ValueError, RuntimeError) as error:
             events.agent_unrepairable(spec.name, str(error))
             break
@@ -103,6 +110,7 @@ def handle_task(
     task: str,
     on_agent_created: Callable[[Path], None] | None = None,
     events: TaskEvents | None = None,
+    subject: str | None = None,
 ) -> TaskResult:
     """Run the full lifecycle for one user task.
 
@@ -110,10 +118,18 @@ def handle_task(
     can still clean up the files if a later phase raises. `events` receives
     every notable moment of the run; the default TaskEvents shows nothing,
     so this function stays silent unless the caller wants otherwise.
+
+    `subject` is what the reusability guard measures a generated agent
+    against, and defaults to the task. They differ when the caller has folded
+    material into the task - the contents of a file, or an earlier exchange.
+    That material is not the user's request, and treating a 16 KB README as
+    the subject makes every word in it forbidden, which rejects every agent
+    that can be written.
     """
     started = time.perf_counter()
     usage = Usage()
     events = events or TaskEvents()
+    subject = task if subject is None else subject
 
     events.phase_started(1, len(PHASES), PHASES[0])
     plan: Plan = plan_agents(task, usage=usage)
@@ -127,16 +143,25 @@ def handle_task(
     pending: dict[str, tuple[str, str]] = {}
     for index, spec in enumerate(plan.agents):
         # A remembered agent is free; generating one is the most expensive
-        # call in the run. Always look before building.
+        # call in the run. Always look before building - but never hand back
+        # one that turned out to have hardcoded the task it was built for,
+        # because that agent is wrong for every task except that one.
         code = lookup(spec.name)
+        if code is not None and not reusable(spec.name):
+            events.agent_retired(spec.name, "it hardcoded the task it was built for")
+            forget(spec.name)
+            code = None
+
         if code is not None:
             reused.append(spec.name)
             record_use(spec.name)
         else:
             events.agent_build_started(spec.name)
-            code = generate_agent_code(spec, upstream_names(plan.agents, index), usage=usage)
+            code = generate_agent_code(
+                spec, upstream_names(plan.agents, index), usage=usage, task=subject
+            )
             built.append(spec.name)
-            pending[spec.name] = (spec.role, code)
+            pending[spec.name] = (canonical_role(spec.name, spec.role), code)
 
         path = save_agent_file(spec, code)
         agent_paths.append(path)
@@ -155,20 +180,28 @@ def handle_task(
     for index, (spec, path) in enumerate(zip(plan.agents, agent_paths, strict=True)):
         events.agent_started(spec.name, index + 1, len(plan.agents))
         result, repaired = _run_with_repair(
-            spec, path, task, outputs, upstream_names(plan.agents, index), usage, events
+            spec, path, task, outputs, upstream_names(plan.agents, index), usage,
+            events, subject,
         )
         if repaired is not None:
+            role = canonical_role(spec.name, spec.role)
             if spec.name in reused:
                 # Fixing an agent the user already chose to keep.
-                remember(spec.name, spec.role, repaired)
+                remember(spec.name, role, repaired, task=subject)
             else:
-                pending[spec.name] = (spec.role, repaired)
+                pending[spec.name] = (role, repaired)
         results.append(result)
         if result.ok:
             outputs[result.name] = result.output
         else:
             failures[result.name] = result.error
         events.agent_finished(result)
+
+    # An agent that could not finish is not a capability worth remembering.
+    # Offering it would put a file in the library that is known not to run,
+    # and the library's whole value is that a hit is free and safe.
+    for name in failures:
+        pending.pop(name, None)
 
     events.phase_started(5, len(PHASES), PHASES[4])
     if not outputs:
@@ -182,6 +215,7 @@ def handle_task(
     return TaskResult(
         response=response,
         plan=plan,
+        task=subject,
         reused=reused,
         built=built,
         pending=pending,

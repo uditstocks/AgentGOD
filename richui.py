@@ -392,6 +392,36 @@ class RichUI(PlainUI):
     def error(self, message: str) -> None:
         self.console.print(Text(message, style="err"))
 
+    def reply(self, text: str) -> None:
+        """A conversational answer: same panel as an answer, no run summary.
+
+        There is no team, no cost and no archive behind this one, so the
+        trailing statistics are simply absent rather than zeroed - a run that
+        never happened must not be reported as a run that cost nothing.
+        """
+        self._stop_live()
+        self.console.print()
+        self.console.print(
+            Panel(
+                Markdown(text),
+                border_style="brand.dim",
+                padding=(1, 3),
+            )
+        )
+
+    def attachments_read(self, labels: list[str]) -> None:
+        board = self._board
+        if board is None:
+            return super().attachments_read(labels)
+        for label in labels:
+            board.notices.append(f"read {label}")
+
+    def context_carried(self, previous_task: str) -> None:
+        board = self._board
+        if board is None:
+            return super().context_carried(previous_task)
+        board.notices.append(f"continuing: {first_line(previous_task, 60)}")
+
     def farewell(self) -> None:
         self.console.print(Text("  goodbye.", style="dim"))
 
@@ -513,6 +543,13 @@ class RichUI(PlainUI):
             row.role = spec.role
         noun = "agent" if len(plan.agents) == 1 else "agents"
         board.activity = ("architect", f"team of {len(plan.agents)} {noun} planned")
+
+    def agent_retired(self, name: str, reason: str) -> None:
+        board = self._board
+        if board is None:
+            return super().agent_retired(name, reason)
+        board.notices.append(f"retired {name} from the library - {reason}")
+        board.activity = ("forge", f"{name} retired · rebuilding it")
 
     def agent_build_started(self, name: str) -> None:
         board = self._board

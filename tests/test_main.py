@@ -106,7 +106,7 @@ def test_eof_keeps_rather_than_hanging(monkeypatch, capsys):
 
 def test_a_failed_write_is_reported_not_crashed(monkeypatch, capsys):
     answers(monkeypatch, "keep")
-    monkeypatch.setattr(library, "remember", lambda *args: False)
+    monkeypatch.setattr(library, "remember", lambda *args, **kwargs: False)
     monkeypatch.setattr(main, "ask", lambda _message: "keep")
     main.ask_keep(two_pending())
     assert "Could not save" in capsys.readouterr().out
