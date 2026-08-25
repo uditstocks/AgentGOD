@@ -159,21 +159,44 @@ it goes, that usually means it deserves a new module.
   Keeping an agent is `library.remember`'s job, not this module's.
 
 ### `orchestrator.py` - the conductor
-- `handle_task(task)` calls the five phases in order, prints progress, and
-  returns a `TaskResult`.
+- `handle_task(task)` calls the five phases in order, reports each notable
+  moment to a `TaskEvents` object, and returns a `TaskResult`. It never
+  prints: presentation is the caller's problem.
 - It owns **retry policy** (`_run_with_repair`): a failed agent is regenerated
   from its own stderr, up to `AGENT_REPAIR_ATTEMPTS` times. The generator
   already has the code and the traceback, so a crash is a repairable event
   rather than lost work.
 - No other business logic of its own - it should read like the flow diagram.
 
-### `main.py` - the user interface
-- Validates `OPENROUTER_API_KEY`, loops on `input()`, prints the final response,
-  then asks *delete or save?*.
+### `events.py` - the presentation seam
+- `TaskEvents` names every notable moment of a run (phase started, plan ready,
+  agent building / running / repairing / finished, merge started) as a no-op
+  hook. The pipeline emits; whoever is watching overrides.
+- The default instance shows nothing, so `handle_task` runs headless - in
+  tests, in scripts, inside another program - at zero presentation cost.
+
+### `ui.py` / `richui.py` - the interface itself
+- All presentation lives behind one surface. `PlainUI` (in `ui.py`) is the
+  reference implementation: every visual the product can show exists as an
+  aligned, colorless ASCII line, safe for pipes, CI and redirected output.
+- `RichUI` (in `richui.py`) subclasses it and repaints the same surface with
+  `rich`: the startup wordmark, a live phase rail, a per-agent status board
+  with spinners, the answer panel, and the run transcript. Anything it does
+  not override degrades to a plain line instead of an AttributeError.
+- `make_ui()` chooses once per session: `AGENTGOD_PLAIN`/`--plain`, a missing
+  `rich`, or a non-terminal stdout all select `PlainUI`. `rich` is a *soft*
+  dependency on purpose - the product must run before its wardrobe arrives.
+- Neither module imports the rest of the project: every fact they display
+  (model name, limits, results) arrives as an argument or through an event.
+
+### `main.py` - the conversation
+- Validates `OPENROUTER_API_KEY`, loops on the task prompt, hands each run's
+  events to the active UI, then asks *keep or discard?*.
 - One failed task must not end the session: `handle_task` is wrapped, and
   cleanup runs in a `finally` so a mid-run failure still offers to remove the
   files it wrote. EOF/Ctrl-C end the session cleanly instead of raising.
-- The only module that talks to a human.
+- The only module that talks to a human - and it talks through `ui`, so it
+  stays about the conversation, not the paint.
 
 ---
 
@@ -297,7 +320,10 @@ which the executor parses off. `TaskResult.cost_summary()` totals both.
 
 ```
 AgentGOD/
-├── main.py               # entry point (only module with input()/print UI)
+├── main.py               # entry point - the conversation, not the paint
+├── ui.py                 # presentation surface + PlainUI + renderer choice
+├── richui.py             # the rich renderer (loaded only when rich exists)
+├── events.py             # TaskEvents - the pipeline/presentation seam
 ├── orchestrator.py       # sequences the pipeline + retry policy
 ├── planner.py            # LLM: task → Plan (and the trust boundary)
 ├── generator.py          # LLM: AgentSpec → source code (trusted header + run())

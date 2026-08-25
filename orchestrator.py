@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from config import AGENT_REPAIR_ATTEMPTS, Usage
+from events import TaskEvents
 from executor import (
     AgentResult,
     DependencyReport,
@@ -66,10 +67,6 @@ class TaskResult:
         return f"{calls} LLM calls · {tokens_in:,} in / {tokens_out:,} out tokens{money}"
 
 
-def _phase(number: int, title: str) -> None:
-    print(f"\n[{number}/{len(PHASES)}] {title}...")
-
-
 def _run_with_repair(
     spec: AgentSpec,
     path: Path,
@@ -77,6 +74,7 @@ def _run_with_repair(
     outputs: dict[str, str],
     upstream: list[str],
     usage: Usage,
+    events: TaskEvents,
 ) -> tuple[AgentResult, str | None]:
     """Execute one agent, regenerating it from its own error output on failure.
 
@@ -88,11 +86,11 @@ def _run_with_repair(
     for attempt in range(1, AGENT_REPAIR_ATTEMPTS + 1):
         if result.ok:
             break
-        print(f"    {spec.name} failed; repairing ({attempt}/{AGENT_REPAIR_ATTEMPTS})")
+        events.agent_repairing(spec.name, attempt, AGENT_REPAIR_ATTEMPTS, result.error)
         try:
             code = generate_agent_code(spec, upstream, feedback=result.error, usage=usage)
         except (ValueError, RuntimeError) as error:
-            print(f"    could not regenerate {spec.name}: {error}")
+            events.agent_unrepairable(spec.name, str(error))
             break
         path = save_agent_file(spec, code)
         result = execute_agent(path, task, outputs)
@@ -104,22 +102,24 @@ def _run_with_repair(
 def handle_task(
     task: str,
     on_agent_created: Callable[[Path], None] | None = None,
+    events: TaskEvents | None = None,
 ) -> TaskResult:
     """Run the full lifecycle for one user task.
 
     `on_agent_created` is called as each agent file is written, so the caller
-    can still clean up the files if a later phase raises.
+    can still clean up the files if a later phase raises. `events` receives
+    every notable moment of the run; the default TaskEvents shows nothing,
+    so this function stays silent unless the caller wants otherwise.
     """
     started = time.perf_counter()
     usage = Usage()
+    events = events or TaskEvents()
 
-    _phase(1, PHASES[0])
+    events.phase_started(1, len(PHASES), PHASES[0])
     plan: Plan = plan_agents(task, usage=usage)
-    print(f"  Plan: {plan.reasoning}")
-    for spec in plan.agents:
-        print(f"  - {spec.name}: {spec.role}")
+    events.plan_ready(plan)
 
-    _phase(2, PHASES[1])
+    events.phase_started(2, len(PHASES), PHASES[1])
     agent_paths: list[Path] = []
     reused: list[str] = []
     built: list[str] = []
@@ -133,6 +133,7 @@ def handle_task(
             reused.append(spec.name)
             record_use(spec.name)
         else:
+            events.agent_build_started(spec.name)
             code = generate_agent_code(spec, upstream_names(plan.agents, index), usage=usage)
             built.append(spec.name)
             pending[spec.name] = (spec.role, code)
@@ -141,23 +142,20 @@ def handle_task(
         agent_paths.append(path)
         if on_agent_created is not None:
             on_agent_created(path)
-        print(f"  {'Reused' if spec.name in reused else 'Wrote '} {path.name}")
+        events.agent_ready(spec.name, path.name, reused=spec.name in reused)
 
-    _phase(3, PHASES[2])
+    events.phase_started(3, len(PHASES), PHASES[2])
     dependencies = install_dependencies(plan.agents)
-    for note in dependencies.problems:
-        print(f"  ! {note}")
-    if dependencies.installed:
-        print(f"  Installed: {', '.join(dependencies.installed)}")
+    events.deps_checked(dependencies)
 
-    _phase(4, PHASES[3])
+    events.phase_started(4, len(PHASES), PHASES[3])
     outputs: dict[str, str] = {}
     failures: dict[str, str] = {}
     results: list[AgentResult] = []
     for index, (spec, path) in enumerate(zip(plan.agents, agent_paths, strict=True)):
-        print(f"  Running {spec.name}...")
+        events.agent_started(spec.name, index + 1, len(plan.agents))
         result, repaired = _run_with_repair(
-            spec, path, task, outputs, upstream_names(plan.agents, index), usage
+            spec, path, task, outputs, upstream_names(plan.agents, index), usage, events
         )
         if repaired is not None:
             if spec.name in reused:
@@ -170,14 +168,15 @@ def handle_task(
             outputs[result.name] = result.output
         else:
             failures[result.name] = result.error
-            print(f"  ! {result.name} failed: {result.error.splitlines()[0][:120]}")
+        events.agent_finished(result)
 
-    _phase(5, PHASES[4])
+    events.phase_started(5, len(PHASES), PHASES[4])
     if not outputs:
         raise RuntimeError(
             "every agent failed:\n"
             + "\n".join(f"  - {name}: {error}" for name, error in failures.items())
         )
+    events.merge_started(len(outputs))
     response = merge_outputs(task, outputs, usage=usage)
 
     return TaskResult(
