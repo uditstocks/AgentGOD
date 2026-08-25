@@ -3,11 +3,14 @@
 One permanent main agent that builds, runs, and manages
 task-specific agents on the fly.
 
-The only module that talks to a human.
+The only module that talks to a human - and it talks through `ui`:
+every visual decision (color, animation, layout, degradation) lives
+there, so this file stays about the conversation, not the paint.
 
-Nothing here imports the rest of the project at module level: preflight() has
-to be able to explain a missing dependency, and it cannot do that from inside
-the traceback of the import that failed.
+Nothing here imports the rest of the project at module level: preflight()
+has to be able to explain a missing dependency, and it cannot do that from
+inside the traceback of the import that failed. `ui` is the one exception
+by design - it needs nothing but the standard library.
 """
 
 from __future__ import annotations
@@ -21,14 +24,34 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent
 MIN_PYTHON = (3, 10)
 QUIT_WORDS = frozenset({"quit", "exit", "q"})
+TASK_PROMPT = "What do you need done?\n> "
 
 # import name -> pip name, for the one message that has to be right.
+# `rich` is deliberately absent: the interface degrades without it.
 REQUIREMENTS = {
     "langchain_openai": "langchain-openai",
     "langchain_core": "langchain-core",
     "pydantic": "pydantic",
     "dotenv": "python-dotenv",
 }
+
+_ACTIVE_UI = None
+
+
+def _ui():
+    """The session's renderer, created on first use so tests can intercept."""
+    global _ACTIVE_UI
+    if _ACTIVE_UI is None:
+        from ui import make_ui
+
+        _ACTIVE_UI = make_ui()
+    return _ACTIVE_UI
+
+
+def _reset_ui() -> None:
+    """Forget the renderer, so the next _ui() re-detects what is installed."""
+    global _ACTIVE_UI
+    _ACTIVE_UI = None
 
 
 def _force_utf8_output() -> None:
@@ -46,24 +69,22 @@ def _force_utf8_output() -> None:
             reconfigure(encoding="utf-8", errors="replace")
 
 
-def banner() -> str:
-    """A short, honest header: what model is about to spend your money."""
-    from config import MAX_AGENTS, MODEL
-
-    return (
-        "\n  A G E N T   G O D\n"
-        "  " + "─" * 52 + "\n"
-        f"  {MODEL}  ·  up to {MAX_AGENTS} agents per task\n"
-    )
+# A UTF-8 BOM at the head of piped stdin (PowerShell adds one), in both the
+# decoded form and the mojibake cp1252 form. Invisible characters must never
+# make an answer unrecognisable.
+_STDIN_NOISE = ("﻿", "​", "ï»¿")
 
 
 def ask(message: str) -> str | None:
     """Prompt the user. Returns None when they end the session (EOF or Ctrl-C)."""
     try:
-        return input(message).strip()
+        answer = _ui().input(message)
     except (EOFError, KeyboardInterrupt):
-        print()
+        _ui().blank()
         return None
+    for noise in _STDIN_NOISE:
+        answer = answer.replace(noise, "")
+    return answer.strip()
 
 
 def _confirm(message: str) -> bool:
@@ -82,8 +103,8 @@ def _check_python() -> bool:
         return True
     need = ".".join(str(part) for part in MIN_PYTHON)
     have = ".".join(str(part) for part in sys.version_info[:3])
-    print(f"AgentGod needs Python {need} or newer. This is Python {have}.")
-    print(f"  {sys.executable}")
+    _ui().error(f"AgentGod needs Python {need} or newer. This is Python {have}.")
+    _ui().note(f"  {sys.executable}")
     return False
 
 
@@ -107,29 +128,42 @@ def _check_dependencies() -> bool:
     if not missing:
         return True
 
-    print("Missing dependencies: " + ", ".join(missing))
+    _ui().warn("Missing dependencies: " + ", ".join(missing))
     command = [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"]
 
     if not _confirm("Install them now? [y/N]: "):
-        print("\nInstall them with:\n  pip install -r requirements.txt")
+        _ui().note("\nInstall them with:\n  pip install -r requirements.txt")
         return False
 
-    print()
+    _ui().blank()
     if subprocess.run(command, cwd=str(PROJECT_DIR)).returncode != 0:
-        print("\npip failed. Install them manually:\n  pip install -r requirements.txt")
+        _ui().error("\npip failed. Install them manually:\n  pip install -r requirements.txt")
         return False
 
     still_missing = _missing_packages()
     if still_missing:
-        print("\nStill missing after install: " + ", ".join(still_missing))
+        _ui().error("\nStill missing after install: " + ", ".join(still_missing))
         return False
 
-    print("\nDependencies installed.\n")
+    # requirements.txt includes `rich`; re-detect so this very session
+    # gets the full interface the install just made possible.
+    _reset_ui()
+    _ui().success("\nDependencies installed.\n")
     return True
 
 
+def _looks_like_openrouter_key(value: str) -> bool:
+    """A cheap shape check before anything is ever written to .env."""
+    return value.startswith("sk-or-") and len(value) >= 24
+
+
 def _check_api_key() -> bool:
-    """Load .env, then make sure a usable key is present - offering to write one."""
+    """Load .env, then make sure a usable key is present - offering to write one.
+
+    The paste prompt only exists for a human at a terminal. Piped stdin is
+    data, not a person: consuming a line of it here would persist arbitrary
+    text as the key and silently destroy a working .env.
+    """
     from dotenv import load_dotenv
 
     env_file = PROJECT_DIR / ".env"
@@ -139,13 +173,22 @@ def _check_api_key() -> bool:
     if key and not key.startswith("sk-or-..."):
         return True
 
-    print("No OPENROUTER_API_KEY found.")
-    print("Get one at https://openrouter.ai/keys\n")
+    _ui().warn("No OPENROUTER_API_KEY found.")
+    _ui().note("Get one at https://openrouter.ai/keys\n")
+
+    if not sys.stdin.isatty():
+        _ui().note("Set it in .env, or as an environment variable:")
+        _ui().note("  OPENROUTER_API_KEY=sk-or-...")
+        return False
 
     entered = ask("Paste your key here (or press Enter to exit): ")
     if not entered:
-        print("\nSet it in .env, or as an environment variable:")
-        print("  OPENROUTER_API_KEY=sk-or-...")
+        _ui().note("\nSet it in .env, or as an environment variable:")
+        _ui().note("  OPENROUTER_API_KEY=sk-or-...")
+        return False
+
+    if not _looks_like_openrouter_key(entered):
+        _ui().warn("That does not look like an OpenRouter key (sk-or-...). Nothing was saved.")
         return False
 
     # Write it back so this only ever happens once.
@@ -159,9 +202,9 @@ def _check_api_key() -> bool:
             ]
         lines.append(f"OPENROUTER_API_KEY={entered}")
         env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        print(f"Saved to {env_file.name} (gitignored).\n")
+        _ui().success(f"Saved to {env_file.name} (gitignored).\n")
     except OSError as error:
-        print(f"Could not write .env ({error}); using the key for this session only.\n")
+        _ui().warn(f"Could not write .env ({error}); using the key for this session only.\n")
 
     os.environ["OPENROUTER_API_KEY"] = entered
     return True
@@ -175,6 +218,19 @@ def preflight() -> bool:
 # --------------------------------------------------------------------------
 # the session
 # --------------------------------------------------------------------------
+
+
+def _session_banner() -> None:
+    """The startup screen: who this is, what it will spend, what it remembers."""
+    from config import MAX_AGENTS, MODEL, RUNS_DIR
+    from library import catalogue
+
+    try:
+        run_count = sum(1 for _ in RUNS_DIR.glob("*.md")) if RUNS_DIR.is_dir() else 0
+    except OSError:
+        run_count = 0
+    _ui().banner(MODEL, MAX_AGENTS, len(catalogue()), run_count)
+    _ui().hint()
 
 
 def ask_keep(result) -> None:
@@ -198,7 +254,7 @@ def ask_keep(result) -> None:
             # Non-interactive or Ctrl-C: keeping is the non-destructive default,
             # and it is the whole point of the library.
             choice = "keep"
-            print("  (no answer - keeping)")
+            _ui().note("  (no answer - keeping)")
 
         choice = choice.lower()
         if choice in ("keep", "k", ""):
@@ -207,12 +263,15 @@ def ask_keep(result) -> None:
                 for name, (role, source) in sorted(result.pending.items())
                 if remember(name, role, source)
             ]
-            print(f"  Kept for reuse: {', '.join(kept)}" if kept else "  Could not save.")
+            if kept:
+                _ui().success(f"  Kept for reuse: {', '.join(kept)}")
+            else:
+                _ui().warn("  Could not save.")
             return
         if choice in ("discard", "d", "delete"):
-            print("  Discarded. They will be rebuilt if a future task needs them.")
+            _ui().note("  Discarded. They will be rebuilt if a future task needs them.")
             return
-        print("  Please type 'keep' or 'discard'.")
+        _ui().warn("  Please type 'keep' or 'discard'.")
 
 
 def cleanup(agent_paths: list[Path]) -> None:
@@ -229,63 +288,83 @@ def cleanup(agent_paths: list[Path]) -> None:
 
 
 def report(task: str, result) -> None:
-    """Print the final answer, archive it, and note anything that failed."""
+    """Archive the answer, then hand everything to the interface to present.
+
+    The answer is already paid for by the time this runs, so neither a broken
+    archive write nor a rendering bug is allowed to lose it: both fall back
+    rather than raise.
+    """
     from runlog import save_run
 
-    print("\n" + "=" * 60)
-    print("FINAL RESPONSE")
-    print("=" * 60)
-    print(result.response)
+    try:
+        saved = save_run(task, result)
+    except Exception:
+        saved = None
 
-    if result.failures:
-        print("\nAgents that failed (their output was excluded):")
-        for name, error in result.failures.items():
-            print(f"  - {name}: {error.splitlines()[0][:150]}")
+    try:
+        _ui().run_succeeded(result, saved)
+    except Exception:
+        from ui import PlainUI
 
-    print(f"\n{result.duration_seconds:.1f}s - {result.cost_summary()}")
-
-    if result.reused:
-        print(f"Reused free from library: {', '.join(result.reused)}")
-    if result.built:
-        print(f"Newly built this run: {', '.join(result.built)}")
-
-    saved = save_run(task, result)
-    if saved is not None:
-        print(f"Saved to {saved.parent.name}/{saved.name}")
-    else:
-        print("(could not write the run archive)")
+        PlainUI().run_succeeded(result, saved)
 
 
-def run_task(task: str) -> bool:
+def run_task(task: str, echo_task: bool = False) -> bool:
     """Run one task end to end. Returns False only if the task itself failed."""
     from orchestrator import handle_task
 
+    ui = _ui()
     agent_paths: list[Path] = []
     ok = False
     try:
-        result = handle_task(task, on_agent_created=agent_paths.append)
+        ui.run_started(task, echo=echo_task)
+        result = handle_task(task, on_agent_created=agent_paths.append, events=ui)
         report(task, result)
         ask_keep(result)
         ok = True
     except KeyboardInterrupt:
-        print("\nCancelled.")
+        ui.run_cancelled()
     except Exception as error:  # one failed task must not end the session
-        print(f"\nTask failed: {type(error).__name__}: {error}")
+        ui.run_failed(error)
     finally:
-        cleanup(agent_paths)
+        # The live display must come down first, but scratch cleanup must
+        # happen even if tearing it down somehow fails.
+        try:
+            ui.run_ended()
+        finally:
+            cleanup(agent_paths)
     return ok
+
+
+def _strip_plain_flag(args: list[str]) -> tuple[list[str], bool]:
+    """Remove --plain from the arguments that are ours.
+
+    Anything at or after --task is task text and is never touched: a task
+    that happens to contain the words "--plain" must reach the model intact.
+    """
+    boundary = args.index("--task") if "--task" in args else len(args)
+    if "--plain" not in args[:boundary]:
+        return args, False
+    head = [argument for argument in args[:boundary] if argument != "--plain"]
+    return head + args[boundary:], True
 
 
 def main() -> int:
     _force_utf8_output()
-    args = sys.argv[1:]
+    args, plain = _strip_plain_flag(sys.argv[1:])
+    if plain:
+        os.environ["AGENTGOD_PLAIN"] = "1"
 
     if args and args[0] in ("-h", "--help"):
-        print("AgentGod - builds the agents a task needs, runs them, lets them go.")
-        print("\nUsage:")
-        print("  python main.py                 interactive session")
-        print('  python main.py --task "..."    run one task and exit')
+        _ui().help()
         return 0
+
+    if args and args[0].startswith("-") and args[0] != "--task":
+        # A mistyped flag must fail loudly, not fall into a session that a
+        # CI pipeline would then hang on.
+        _ui().error(f"Unknown option: {args[0]}")
+        _ui().note('Usage: python main.py [--plain] [--task "..."]')
+        return 2
 
     if not preflight():
         return 1
@@ -294,16 +373,15 @@ def main() -> int:
     if args and args[0] == "--task":
         task = " ".join(args[1:]).strip()
         if not task:
-            print('Usage: python main.py --task "what you need done"')
+            _ui().error('Usage: python main.py --task "what you need done"')
             return 1
-        return 0 if run_task(task) else 1
+        return 0 if run_task(task, echo_task=True) else 1
 
-    print(banner())
-    print("  Type your task, or 'quit' to exit.")
+    _session_banner()
     while True:
-        task = ask("\nWhat do you need done?\n> ")
+        task = ask("\n" + TASK_PROMPT)
         if task is None or task.lower() in QUIT_WORDS:
-            print("Goodbye.")
+            _ui().farewell()
             return 0
         if not task:
             continue

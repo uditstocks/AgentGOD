@@ -7,7 +7,7 @@
 ### One agent that writes other agents - runs them, merges their answers, and deletes them.
 
 ![python](https://img.shields.io/badge/python-3.10%2B-334155?style=flat-square&labelColor=0d1117)
-![tests](https://img.shields.io/badge/tests-119%20passed-15803d?style=flat-square&labelColor=0d1117)
+![tests](https://img.shields.io/badge/tests-183%20passed-15803d?style=flat-square&labelColor=0d1117)
 ![ruff](https://img.shields.io/badge/ruff-clean-15803d?style=flat-square&labelColor=0d1117)
 ![pyright](https://img.shields.io/badge/pyright-0%20errors-15803d?style=flat-square&labelColor=0d1117)
 ![model](https://img.shields.io/badge/any%20model-OpenRouter-334155?style=flat-square&labelColor=0d1117)
@@ -66,44 +66,65 @@ outranks the file, so CI can inject the key without one.
 
 ## See it run
 
-A real session. Nothing staged.
+While a task runs, one live board shows the whole machine: which phase is
+active, every agent's state, and what is happening *right now* - written,
+reused, running, repairing itself, done, failed. It animates while the
+system works and disappears when it is finished, leaving only the answer
+and a compact transcript.
 
 ```
-$ python main.py
+  ────────────────────────────────────────────────────── 22:14 ──
 
-What do you need done?
-> Research the electric-scooter industry, analyse its main risks, and write
-  a 200-word investor memo with a clear recommendation
+  PLAN  ▸  FORGE  ▸  DEPS  ▸  RUN  ▸  MERGE                00:08
+  ⠸ run  translation_agent is working  (1/2)
+
+   ⠼  translation_agent  Translate the phrase into the      3s
+   ○  summary_agent      Condense the findings              …
+
+  ╭─  A N S W E R  ──────────────────────────────────────────╮
+  │                                                          │
+  │   'Good morning' is 'Bonjour' in French and              │
+  │   'Guten Morgen' in German.                              │
+  │                                                          │
+  ╰──────────────────────────────────────────────────────────╯
+  team   ●  translation_agent  built   2.8s · 61 tok
+         ●  summary_agent      reused  1.5s · 85 tok
+  run    10.4s · 5 LLM calls · 1,395 in / 226 out · ~$0.0003
+  saved  runs/20260825_221204_translate-the-phrase.md
+
+  ❯ Keep the 1 new agent (translation_agent) for reuse? [keep/discard]:
+```
+
+Pipe it, redirect it, run it in CI, or run it without `rich` installed, and
+the same run degrades to clean, aligned plain text - same information, no
+color, no animation, nothing that fights a log file:
+
+```
+$ python main.py --plain --task "In one line, name one benefit of static typing."
 
 [1/5] Planning agents...
-  - research_agent   Gather information on the industry and its main risks.
-  - analysis_agent   Analyze the gathered information and identify key risks.
-  - memo_writer      Draft a 200-word investor memo with a recommendation.
+  - research_agent: gather facts about the benefits of static typing
+  - summary_agent: condense the findings into a single line
 
 [2/5] Generating agent code...
-  Wrote research_agent.py
-  Wrote analysis_agent.py
-  Wrote memo_writer.py
+  reused research_agent.py (from library, free)
+  reused summary_agent.py (from library, free)
 
-[3/5] Checking dependencies...
 [4/5] Executing agents...
-[5/5] Merging outputs...
+  [1/2] research_agent running...
+    done in 7.2s
 
 ============================================================
-FINAL RESPONSE
+ANSWER
 ============================================================
-### Investor Memo: Electric-Scooter Industry Overview & Recommendations
+Static typing helps catch type-related errors early, improving reliability.
 
-The electric-scooter industry is poised for significant growth, with
-projected revenues reaching $30 billion by 2028, fueled by urbanization and
-a shift towards sustainable transportation solutions. Key players include
-Bird, Lime, and Spin. However, several risks could impact investment returns.
-...
-
-34.1s  ·  8 LLM calls  ·  4,106 in / 1,809 out tokens  ·  ~$0.0017
-
-Delete the generated agents or save them to inventory? [delete/save]:
+22.1s · 4 LLM calls · 1,031 in / 198 out tokens · ~$0.0003
 ```
+
+The pipeline itself never prints. It emits **events** (`events.py`), and the
+interface (`ui.py` / `richui.py`) decides what they look like - so the same
+run is a living board in a terminal and a clean transcript in a pipe.
 
 This is `memo_writer.py` - written during that run, by the machine, verbatim:
 
@@ -347,7 +368,7 @@ ranked by how often they have actually been used.
   $ pip install pytest ruff pyright
 
   $ pytest
-+ 119 passed
++ 183 passed
 
   $ ruff check .
 + All checks passed!
@@ -377,6 +398,12 @@ Everything below has a working default. Only the key is required.
 | `LLM_TIMEOUT_SECONDS` | `60` | Deadline for the architect's own calls |
 | `LLM_MAX_RETRIES` | `3` | Retries on a transient failure |
 | `MAX_CHARS_PER_INPUT` | `6000` | Cap on text forwarded to the next agent |
+| `AGENTGOD_PLAIN` | - | Force plain output (same as `--plain`) |
+| `NO_COLOR` | - | Keep the interface, strip the color |
+
+The interface needs `rich`, but only wants it: if it is missing, every run
+still works in plain text. Pipes, redirects and CI are detected and get
+plain text automatically.
 
 ---
 
@@ -384,6 +411,9 @@ Everything below has a working default. Only the key is required.
 
 ```diff
   main.py             the only file that speaks to a human
+  ui.py               the presentation surface - and its plain-text fallback
+  richui.py           the live interface: phase rail, agent board, panels
+  events.py           the seam: the pipeline emits, the interface draws
   orchestrator.py     the architect - sequences everything, owns retries
   planner.py          task → team specification (and the security boundary)
   generator.py        specification → source code

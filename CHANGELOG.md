@@ -1,5 +1,47 @@
 # Changelog
 
+## The interface - 2026-08-25
+
+The pipeline is unchanged; how it *feels* is not. The terminal experience is
+redesigned end to end, behind a strict logic/presentation seam.
+
+### One surface, two renderers
+
+- New `events.py`: `handle_task` now emits `TaskEvents` (phase started, plan
+  ready, agent building / running / repairing / finished, merge started)
+  instead of printing. The pipeline is now completely silent on its own.
+- New `ui.py`: `PlainUI`, the reference renderer - every visual as an aligned
+  ASCII line - plus `make_ui()`, which picks the renderer once per session.
+- New `richui.py`: the full interface on `rich` - a startup wordmark with the
+  session's model, ceiling, library and archive counts; a live board with a
+  phase rail (`PLAN ▸ FORGE ▸ DEPS ▸ RUN ▸ MERGE`), per-agent status rows
+  (queued / writing / reused·free / running / repairing / done / failed, with
+  spinners, per-agent timing and token counts); the answer in a panel; a
+  compact team/cost/archive transcript; styled error and cancellation states.
+  The board is transient: animation during the run, clean scrollback after.
+
+### Degradation is a feature
+
+- `rich` is a soft dependency: missing, the whole product still runs in plain
+  text. Pipes, redirects and CI are detected (`Console.is_terminal`) and get
+  plain text automatically; `--plain` / `AGENTGOD_PLAIN=1` force it;
+  `NO_COLOR` keeps the interface but strips color; the legacy Windows console
+  gets an ASCII glyph set.
+- Piped answers on Windows arrive with a UTF-8 BOM (PowerShell adds one);
+  `ask()` now strips it, so `echo discard | python main.py --task ...` is
+  understood instead of silently falling back to the default.
+- `inventory.delete_agents` no longer prints; scratch cleanup is bookkeeping,
+  and what the user hears about it is the interface's decision.
+
+### Proof
+
+- 64 new tests: the orchestrator's event stream and retry sequencing with
+  every collaborator faked, PlainUI's transcript asserted line by line, and
+  RichUI driven through a full run (repair and failure included) into a
+  capture buffer. 183 total, still no API key or network needed.
+- Verified live on Windows 11: rich and plain, interactive and piped,
+  success, failure (bad key), cancellation, empty library, and reuse paths.
+
 ## Hardening pass - 2026-08-25
 
 Closes all 30 findings from the end-to-end audit of commit `78e6d79`.

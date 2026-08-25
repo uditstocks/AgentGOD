@@ -129,3 +129,79 @@ def test_cleanup_removes_working_copies(tmp_path):
 def test_cleanup_with_nothing_to_do_is_silent(capsys):
     main.cleanup([])
     assert capsys.readouterr().out == ""
+
+
+# --- argument handling: flags are ours, task text is the model's -------------
+
+
+def test_plain_flag_is_stripped_before_task():
+    args, plain = main._strip_plain_flag(["--plain", "--task", "do a thing"])
+    assert args == ["--task", "do a thing"]
+    assert plain is True
+
+
+def test_plain_inside_task_text_is_not_consumed():
+    args, plain = main._strip_plain_flag(["--task", "explain what --plain means"])
+    assert args == ["--task", "explain what --plain means"]
+    assert plain is False
+
+
+def test_unknown_flag_fails_loudly(monkeypatch, capsys):
+    monkeypatch.setattr(main.sys, "argv", ["main.py", "--tsak", "oops"])
+    assert main.main() == 2
+    assert "Unknown option" in capsys.readouterr().out
+
+
+# --- stdin noise: invisible characters must never change an answer -----------
+
+
+class _ScriptedUI:
+    def __init__(self, reply):
+        self.reply = reply
+
+    def input(self, _message):
+        return self.reply
+
+    def blank(self):
+        print()
+
+
+@pytest.mark.parametrize("raw", ["discard", "﻿discard", "ï»¿discard", "  discard \r"])
+def test_ask_strips_stdin_noise(monkeypatch, raw):
+    monkeypatch.setattr(main, "_ACTIVE_UI", _ScriptedUI(raw))
+    assert main.ask("> ") == "discard"
+
+
+# --- the key prompt must never eat piped data and write it to .env -----------
+
+
+def test_key_prompt_refuses_non_interactive_stdin(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(main.sys.stdin, "isatty", lambda: False)
+
+    def explode(_message):  # pragma: no cover - must never run
+        raise AssertionError("must not prompt when stdin is a pipe")
+
+    monkeypatch.setattr(main, "ask", explode)
+    assert main._check_api_key() is False
+    assert not (tmp_path / ".env").exists()
+
+
+def test_key_prompt_rejects_text_that_is_not_a_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(main.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(main, "ask", lambda _message: "discard")
+    assert main._check_api_key() is False
+    assert not (tmp_path / ".env").exists()
+
+
+def test_key_prompt_saves_a_plausible_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(main.sys.stdin, "isatty", lambda: True)
+    entered = "sk-or-v1-" + "a" * 64
+    monkeypatch.setattr(main, "ask", lambda _message: entered)
+    assert main._check_api_key() is True
+    assert entered in (tmp_path / ".env").read_text(encoding="utf-8")
