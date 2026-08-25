@@ -101,6 +101,22 @@ class Plan(BaseModel):
         return self
 
 
+# Preferred names for the responsibilities that recur across almost every task.
+# A stable vocabulary is what makes the library hit instead of building a new
+# near-duplicate agent under a slightly different name every run.
+STANDARD_AGENTS = (
+    "research_agent - gather facts about whatever subject the task names",
+    "analysis_agent - analyse supplied material and draw out the key points",
+    "summary_agent - condense supplied material to a requested length",
+    "writer_agent - write prose in whatever form the task asks for",
+    "editor_agent - revise supplied text for clarity and correctness",
+    "outline_agent - produce a structured outline of the requested piece",
+    "comparison_agent - compare options against stated criteria",
+    "critique_agent - find weaknesses and risks in supplied material",
+    "code_agent - write or explain code",
+    "translation_agent - translate supplied text",
+)
+
 PLANNER_PROMPT = """You are the planner of a multi-agent system.
 You never solve tasks yourself. You decide which specialized agents are needed.
 
@@ -113,6 +129,18 @@ Rules:
   Leave 'dependencies' empty unless a package is genuinely unavoidable.
 - Your 'reasoning' must describe exactly the agents you listed - no more, no fewer.
 
+REUSE COMES FIRST. Agents are written once and kept. An agent whose name already
+exists is free; a new name costs a full code-generation call. So:
+- These agents are ALREADY BUILT and cost nothing to use. Prefer them whenever one
+  can do the job, and use the name EXACTLY as written:
+{library}
+- If none fits, prefer one of these standard names before inventing your own:
+{standard}
+- Describe every agent by its FUNCTION, never by this task's subject.
+  Write "gather facts about the subject of the task", not "research electric
+  scooters". A subject-specific agent can never be reused and costs full price
+  every time.
+
 User task:
 {task}
 """
@@ -124,8 +152,17 @@ def plan_agents(task: str, usage: Usage | None = None) -> Plan:
     include_raw keeps the underlying message reachable, so the planning call's
     token usage is accounted for like every other call.
     """
+    from library import describe_for_planner
+
     llm = get_llm().with_structured_output(Plan, include_raw=True)
-    result = llm.invoke(PLANNER_PROMPT.format(task=task, max_agents=MAX_AGENTS))
+    result = llm.invoke(
+        PLANNER_PROMPT.format(
+            task=task,
+            max_agents=MAX_AGENTS,
+            library=describe_for_planner(),
+            standard="\n".join(f"  - {line}" for line in STANDARD_AGENTS),
+        )
+    )
 
     if isinstance(result, dict):
         if usage is not None and result.get("raw") is not None:

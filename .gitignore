@@ -13,6 +13,7 @@ env/
 # Runtime artifacts of the agent creator
 generated_agents/
 inventory/
+runs/
 .agent_venv/
 
 # OS / editor

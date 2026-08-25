@@ -300,6 +300,47 @@ own, with nothing installed.
 
 ---
 
+## It gets cheaper every run
+
+An agent is written once and kept. The next task that needs the same
+capability gets it back for free - no planning guess, no code generation, no
+tokens. Only genuinely new capabilities cost anything.
+
+```diff
+  THREE REPORTS, THREE DIFFERENT SUBJECTS
+
+- run 1  solar panels      6 LLM calls   3,665 in / 1,978 out   built research_agent + summary_agent
++ run 2  Brazilian coffee  4 LLM calls   2,472 in / 1,552 out   both reused, free
++ run 3  European e-bikes  4 LLM calls   2,702 in / 1,639 out   both reused, free
+```
+
+This works because generated agents are **topic-agnostic by construction**. The
+generator is forbidden from writing the current subject into the agent's prompt;
+the subject arrives at runtime on stdin. The `research_agent` built for solar
+panels contains the word "solar" exactly zero times:
+
+```python
+def run(task: str, previous_outputs: dict) -> str:
+    prompt = (
+        "You are a research agent. Gather key facts for the task below.
+"
+        f"Task: {task}
+"
+        f"Previous outputs: {format_previous(previous_outputs)}"
+    )
+    return call_llm(prompt)
+```
+
+**You decide what gets kept.** After every run that had to build something new,
+AgentGod shows you what it built and asks `keep/discard`. Nothing enters the
+library without your say-so, and reused agents are never re-asked about.
+
+The planner is shown your library before it plans, and is told to prefer an
+existing name over inventing a new one. Agents live in `inventory/agents/`,
+ranked by how often they have actually been used.
+
+---
+
 ## Proof
 
 ```diff
@@ -349,7 +390,9 @@ Everything below has a working default. Only the key is required.
   codeguard.py        reads that source before it is trusted
   executor.py         files, subprocesses, timeouts - no model calls
   merger.py           every output → one voice
-  inventory.py        delete, or remember
+  library.py          remembers every agent, hands it back free
+  runlog.py           archives the answer to runs/
+  inventory.py        clears the scratch copies
 
 - generated_agents/   where an agent lives while it works       DISPOSABLE
 + inventory/          where an agent goes if you keep it        YOURS
@@ -367,8 +410,7 @@ This is not pretending to be more than it is.
 
 Agents run in sequence, not in parallel - there is an order here, not yet a
 scheduler. None of them carries a tool, browses the open web, or remembers a
-previous run. A team saved to `inventory/` is an archive, not yet a library;
-nothing is reused automatically.
+previous run within a task.
 
 What is here is exact. What is not here has not been claimed.
 

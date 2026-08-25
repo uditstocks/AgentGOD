@@ -162,6 +162,12 @@ Inside run():
 - return call_llm(prompt).
 
 Rules:
+- REUSABLE: this agent is kept and run again on completely different subjects.
+  Describe only its ROLE in the prompt you build. Never hardcode the current
+  task's subject, topic, names, numbers or domain into a string literal - every
+  one of those must come from the `task` argument at runtime.
+  Write:  "You are a research agent. Gather key facts for the task below."
+  Not:    "You are researching the electric scooter industry."
 - Standard library only. No imports at all unless truly unavoidable.
 - No file writing, no subprocess, no eval.
 - Keep it short, readable and self-contained. No extra features.

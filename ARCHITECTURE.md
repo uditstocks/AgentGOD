@@ -58,7 +58,9 @@ Numbered lifecycle for one task:
 | 4 | `executor.py` | Install vetted pip packages into an isolated venv | ❌ |
 | 5 | `executor.py` | Run each agent as a subprocess, in order | ❌ (the *agents* call the LLM) |
 | 6 | `merger.py` | All outputs → one final response | ✅ always |
-| 7 | `inventory.py` | Delete files, or move to `inventory/` | ❌ |
+| 7 | `library.py` | Remember each new agent for future tasks | ❌ |
+| 8 | `runlog.py` | Archive the answer to `runs/` | ❌ |
+| 9 | `inventory.py` | Clear the scratch copies | ❌ |
 
 ---
 
@@ -133,10 +135,28 @@ it goes, that usually means it deserves a new module.
   stage that still holds the user's original wording, so it is what enforces the
   task's own constraints (word counts, format, tone).
 
-### `inventory.py` - lifecycle end
-- `delete_agents` - unlink the files, tolerating ones already gone.
-- `save_to_inventory` - move files into a **unique** `inventory/<timestamp>/`
-  and write a `TASK.txt` describing what the team was built for.
+### `library.py` - the reusable agent library
+- `lookup(name)` returns stored source, or None. A hit skips the generator
+  entirely, which is the single largest cost in a run.
+- `remember(name, role, source)` stores an agent under `inventory/agents/`.
+  The orchestrator never calls it for a newly built agent: those are held in
+  `TaskResult.pending` until `main.ask_keep` gets a decision from the user.
+  Repairing an already-kept agent is the one case that writes without asking.
+- `describe_for_planner()` is injected into the planner prompt, so the model
+  prefers an agent that already exists over inventing a near-duplicate.
+- The `.py` files are the source of truth; `index.json` is a rebuildable
+  convenience, so a corrupt index never costs the user their library.
+- Reuse is only sound because the generator is forbidden from baking the
+  task's subject into an agent. See `generator.GENERATOR_PROMPT`.
+
+### `runlog.py` - the answer outlives the terminal
+- Every completed task is written to `runs/<timestamp>_<slug>.md`.
+- A failed write returns None rather than raising: the answer is already
+  printed and paid for.
+
+### `inventory.py` - scratch cleanup
+- `delete_agents` - unlink the working copies, tolerating ones already gone.
+  Keeping an agent is `library.remember`'s job, not this module's.
 
 ### `orchestrator.py` - the conductor
 - `handle_task(task)` calls the five phases in order, prints progress, and
@@ -284,7 +304,9 @@ AgentGOD/
 ├── codeguard.py          # static validation of generated code
 ├── executor.py           # files, pip, subprocesses (no LLM)
 ├── merger.py             # LLM: outputs → final answer
-├── inventory.py          # delete/archive (no LLM)
+├── library.py            # remembers agents for reuse (no LLM)
+├── runlog.py             # archives each answer to runs/ (no LLM)
+├── inventory.py          # clears scratch copies (no LLM)
 ├── config.py             # model, key, paths, limits - the only provider-aware file
 ├── tests/                # pytest suite; needs no API key
 ├── generated_agents/     # scratch space, contents are disposable

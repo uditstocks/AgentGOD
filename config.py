@@ -37,6 +37,9 @@ GENERATED_DIR = PROJECT_DIR / "generated_agents"
 # Where agents go if the user chooses to keep them.
 INVENTORY_DIR = PROJECT_DIR / "inventory"
 
+# Where the answer to every completed task is archived.
+RUNS_DIR = PROJECT_DIR / "runs"
+
 # Isolated interpreter used when a generated agent needs extra pip packages.
 AGENT_VENV_DIR = PROJECT_DIR / ".agent_venv"
 

@@ -88,40 +88,15 @@ def test_long_outputs_are_truncated():
     assert len(formatted) < MAX_CHARS_PER_INPUT * 2
 
 
-# --- L3: inventory edge cases ---------------------------------------------------
-
-
-def test_save_to_inventory_moves_files_and_records_the_task(tmp_path, monkeypatch):
-    monkeypatch.setattr(inventory, "INVENTORY_DIR", tmp_path / "inventory")
-    agent = tmp_path / "research_agent.py"
-    agent.write_text("print(1)\n", encoding="utf-8")
-
-    folder = inventory.save_to_inventory([agent], "find things")
-    assert (folder / "research_agent.py").is_file()
-    assert (folder / "TASK.txt").read_text(encoding="utf-8") == "find things"
-    assert not agent.exists()
-
-
-def test_saves_in_the_same_second_do_not_collide(tmp_path, monkeypatch):
-    monkeypatch.setattr(inventory, "INVENTORY_DIR", tmp_path / "inventory")
-    monkeypatch.setattr(inventory, "_unique_folder", inventory._unique_folder)
-
-    folders = []
-    for index in range(3):
-        agent = tmp_path / f"agent_{index}.py"
-        agent.write_text("print(1)\n", encoding="utf-8")
-        folders.append(inventory.save_to_inventory([agent], f"task {index}"))
-
-    assert len(set(folders)) == 3
-    for index, folder in enumerate(folders):
-        assert (folder / "TASK.txt").read_text(encoding="utf-8") == f"task {index}"
-
-
-def test_saving_a_missing_file_does_not_raise(tmp_path, monkeypatch):
-    monkeypatch.setattr(inventory, "INVENTORY_DIR", tmp_path / "inventory")
-    folder = inventory.save_to_inventory([tmp_path / "gone.py"], "t")
-    assert (folder / "TASK.txt").is_file()
+# --- scratch cleanup (keeping an agent is library.remember's job) ------------
 
 
 def test_deleting_a_missing_file_does_not_raise(tmp_path):
     assert inventory.delete_agents([tmp_path / "gone.py"]) == 1
+
+
+def test_delete_removes_real_files(tmp_path):
+    agent = tmp_path / "research_agent.py"
+    agent.write_text("print(1)", encoding="utf-8")
+    assert inventory.delete_agents([agent]) == 1
+    assert not agent.exists()
