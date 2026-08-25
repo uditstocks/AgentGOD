@@ -402,20 +402,6 @@ Everything below has a working default. Only the key is required.
 One file, one responsibility. The reasoning behind every decision is in
 **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
----
-
-## Boundaries
-
-This is not pretending to be more than it is.
-
-Agents run in sequence, not in parallel - there is an order here, not yet a
-scheduler. None of them carries a tool, browses the open web, or remembers a
-previous run within a task.
-
-What is here is exact. What is not here has not been claimed.
-
----
-
 <div align="center">
 
 Every agent this system builds will eventually stop existing.
