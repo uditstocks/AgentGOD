@@ -1,0 +1,21 @@
+# Secrets — never commit real keys
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Runtime artifacts of the agent creator
+generated_agents/
+inventory/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

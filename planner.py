@@ -15,7 +15,7 @@ class AgentSpec(BaseModel):
     )
     dependencies: list[str] = Field(
         default_factory=list,
-        description="Extra pip packages this agent needs (beyond langchain/langchain-anthropic)",
+        description="Extra pip packages this agent needs (beyond langchain/langchain-openai)",
     )
 
 

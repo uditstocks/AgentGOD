@@ -64,8 +64,8 @@ One module = one responsibility. If you're adding code and can't decide where
 it goes, that usually means it deserves a new module.
 
 ### `config.py` — shared setup
-- Owns the model name, the OpenRouter base URL, and the two directories
-  (`generated_agents/`, `inventory/`).
+- Loads `.env`, then owns the model name, the OpenRouter base URL, and the two
+  directories (`generated_agents/`, `inventory/`).
 - `get_llm()` is the **only** place an LLM client is constructed for the main
   agent. Every other module imports it. If you ever switch providers
   (OpenRouter → Anthropic → local Ollama), you change **one function**.
@@ -236,6 +236,9 @@ AgentGOD/
 │   └── 20260709_183000/
 │       ├── research_agent.py
 │       └── TASK.txt
+├── .env                  # your real key — gitignored, never committed
+├── .env.example          # committed template
+├── .gitignore
 ├── requirements.txt
 ├── README.md
 └── ARCHITECTURE.md       # this file

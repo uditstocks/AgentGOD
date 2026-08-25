@@ -4,14 +4,14 @@ One permanent main agent that builds, runs, and manages
 task-specific LangChain agents on the fly.
 """
 
-import os
-import sys
+from pathlib import Path
 
+from config import require_api_key
 from inventory import delete_agents, save_to_inventory
 from orchestrator import handle_task
 
 
-def ask_cleanup(agent_paths, task) -> None:
+def ask_cleanup(agent_paths: list[Path], task: str) -> None:
     """Let the user decide the fate of the generated agents."""
     while True:
         choice = input("\nDelete the generated agents or save them to inventory? [delete/save]: ")
@@ -26,8 +26,7 @@ def ask_cleanup(agent_paths, task) -> None:
 
 
 def main() -> None:
-    if not os.getenv("OPENROUTER_API_KEY"):
-        sys.exit("Set the OPENROUTER_API_KEY environment variable first.")
+    require_api_key()
 
     print("Dynamic Agent Creator (type 'quit' to exit)")
     while True:

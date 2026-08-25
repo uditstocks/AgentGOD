@@ -31,7 +31,26 @@ retired (or archived) per task. The main agent is an agent *engineer*, not a wor
 pip install -r requirements.txt
 ```
 
-Get an API key from [openrouter.ai](https://openrouter.ai/keys) and set it:
+Get an API key from [openrouter.ai](https://openrouter.ai/keys), then copy the
+template and fill it in:
+
+```bash
+# Windows (PowerShell)
+Copy-Item .env.example .env
+
+# macOS / Linux
+cp .env.example .env
+```
+
+```ini
+# .env
+OPENROUTER_API_KEY=sk-or-...
+# MODEL=openai/gpt-5.1   # optional override
+```
+
+`.env` is gitignored — keep your real key out of commits, and share only
+`.env.example`. Real environment variables still take priority over `.env`,
+so CI can inject the key without a file:
 
 ```bash
 # Windows (PowerShell)
@@ -93,10 +112,10 @@ Agents run sequentially; agent N receives the outputs of agents 1..N-1.
 
 ## Model
 
-Defaults to `openai/gpt-5.1` via the OpenRouter API. Override with an env var:
+Defaults to `openai/gpt-4o-mini` via the OpenRouter API. Override with an env var:
 
 ```bash
-MODEL="openai/gpt-5.1-codex" python main.py
+MODEL="openai/gpt-4o-mini" python main.py
 ```
 
 ## V0 limitations (on purpose)
