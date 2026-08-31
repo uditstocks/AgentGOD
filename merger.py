@@ -33,7 +33,12 @@ def _format_outputs(outputs: dict[str, str]) -> str:
     return "\n\n".join(sections)
 
 
-def merge_outputs(task: str, outputs: dict[str, str], usage: Usage | None = None) -> str:
+def merge_outputs(
+    task: str,
+    outputs: dict[str, str],
+    usage: Usage | None = None,
+    effort: str | None = None,
+) -> str:
     """Combine every agent's output into a single final response.
 
     The merger always runs, including for a single agent: it is the only
@@ -46,4 +51,5 @@ def merge_outputs(task: str, outputs: dict[str, str], usage: Usage | None = None
     return complete(
         MERGER_PROMPT.format(task=task, outputs=_format_outputs(outputs)),
         usage=usage,
+        effort=effort,
     ).strip()

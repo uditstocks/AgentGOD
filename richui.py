@@ -54,8 +54,8 @@ THEME = Theme(
     }
 )
 
-# Short names for the five pipeline phases, shown on the rail.
-RAIL = ("PLAN", "FORGE", "DEPS", "RUN", "MERGE")
+# Short names for the six pipeline phases, shown on the rail.
+RAIL = ("PLAN", "FORGE", "DEPS", "RUN", "MERGE", "CHECK")
 
 # What the activity line says while each phase has nothing more specific.
 PHASE_ACTIVITY = {
@@ -64,6 +64,7 @@ PHASE_ACTIVITY = {
     3: ("deps", "resolving extra packages"),
     4: ("run", "executing the team"),
     5: ("merge", "collapsing every output into one answer"),
+    6: ("check", "reading the answer back against the request"),
 }
 
 GLYPHS = {
@@ -75,6 +76,7 @@ GLYPHS = {
     "arrow": "▸",
     "prompt": "❯",  # noqa: RUF001 - deliberate prompt ornament, not a greater-than
     "rule": "─",
+    "parallel": "∥",
     "spinner": "dots",
 }
 
@@ -88,6 +90,7 @@ ASCII_GLYPHS = {
     "arrow": ">",
     "prompt": ">",
     "rule": "-",
+    "parallel": "||",
     "spinner": "line",
 }
 
@@ -141,6 +144,9 @@ class _Row:
     duration: float | None = None
     tokens: int = 0
     reused: bool = False
+    # True while this agent shares its wave with others - the dependency
+    # graph proved them independent, so they are genuinely running at once.
+    parallel: bool = False
     spinner: Spinner | None = None
 
 
@@ -159,6 +165,9 @@ class _Board:
         self.by_name: dict[str, _Row] = {}
         self.notices: list[str] = []
         self.reasoning = ""
+        self.complexity = ""
+        # (LLM calls so far, estimated cost so far or None) - the live meter.
+        self.spend: tuple[int, float | None] | None = None
         self.activity: tuple[str, str] = ("architect", "reading the task")
         self.started_at = time.monotonic()
         # One spinner for the activity line, created once: a fresh Spinner
@@ -210,11 +219,21 @@ class _Board:
                 rail.append(f"  {g['arrow']}  ", style="dim")
 
         elapsed = int(time.monotonic() - self.started_at)
-        clock = Text(f"{elapsed // 60:02d}:{elapsed % 60:02d}  ", style="dim")
+        right = Text()
+        if self.complexity and self.complexity != "standard":
+            style = "brand" if self.complexity == "deep" else "dim"
+            right.append(f"{self.complexity}", style=style)
+            right.append("  ·  ", style="dim")
+        if self.spend is not None:
+            calls, cost = self.spend
+            meter = f"{calls} calls" + (f" · ~${cost:.4f}" if cost else "")
+            right.append(meter, style="dim")
+            right.append("  ·  ", style="dim")
+        right.append(f"{elapsed // 60:02d}:{elapsed % 60:02d}  ", style="dim")
         grid = Table.grid(expand=True)
         grid.add_column()
         grid.add_column(justify="right")
-        grid.add_row(rail, clock)
+        grid.add_row(rail, right)
         return grid
 
     def _activity(self) -> RenderableType:
@@ -249,7 +268,11 @@ class _Board:
         if row.status == "running":
             spinner = row.spinner or self.spin(row, "agent")
             elapsed = time.monotonic() - (row.started_at or time.monotonic())
-            return spinner, role, Text(f"{elapsed:.0f}s", style="dim")
+            meta = Text()
+            if row.parallel:
+                meta.append(f"{g['parallel']} ", style="agent")
+            meta.append(f"{elapsed:.0f}s", style="dim")
+            return spinner, role, meta
         if row.status == "repair":
             spinner = row.spinner or self.spin(row, "warn")
             note = Text("rewriting itself from its own error", style="warn")
@@ -478,7 +501,15 @@ class RichUI(PlainUI):
                 "failed agents were excluded from the answer", style="warn"
             )
             summary.add_row("", "", excluded)
+        if getattr(result, "council_improved", False):
+            summary.add_row(
+                "", "council",
+                Text("found real faults; the answer was refined", style="ok"),
+            )
         stats = f"{_duration(result.duration_seconds)} · {result.cost_summary()}"
+        complexity = getattr(result, "complexity", "standard")
+        if complexity != "standard":
+            stats += f" · graded {complexity}"
         summary.add_row("", "run", Text(stats, style="dim"))
         if saved is not None:
             summary.add_row("", "saved", Text(f"{saved.parent.name}/{saved.name}", style="dim"))
@@ -538,11 +569,14 @@ class RichUI(PlainUI):
         if board is None:
             return super().plan_ready(plan)
         board.reasoning = plan.reasoning
+        complexity = getattr(plan, "complexity", "standard")
+        board.complexity = complexity
         for spec in plan.agents:
             row = board.row(spec.name)
             row.role = spec.role
         noun = "agent" if len(plan.agents) == 1 else "agents"
-        board.activity = ("architect", f"team of {len(plan.agents)} {noun} planned")
+        graded = "" if complexity == "standard" else f" · graded {complexity}"
+        board.activity = ("architect", f"team of {len(plan.agents)} {noun} planned{graded}")
 
     def agent_retired(self, name: str, reason: str) -> None:
         board = self._board
@@ -583,6 +617,18 @@ class RichUI(PlainUI):
             summary = "no extra packages needed"
         board.activity = ("deps", summary)
 
+    def wave_started(self, index: int, total: int, names: list[str]) -> None:
+        board = self._board
+        if board is None:
+            return super().wave_started(index, total, names)
+        together = len(names) > 1
+        for name in names:
+            board.row(name).parallel = together
+        if together:
+            board.activity = (
+                "run", f"wave {index}/{total} · {' + '.join(names)} in parallel"
+            )
+
     def agent_started(self, name: str, index: int, total: int) -> None:
         board = self._board
         if board is None:
@@ -591,7 +637,10 @@ class RichUI(PlainUI):
         row.status = "running"
         row.started_at = time.monotonic()
         row.spinner = None
-        board.activity = ("run", f"{name} is working  ({index}/{total})")
+        if not row.parallel:
+            # In a parallel wave the activity line already names the whole
+            # wave; one agent claiming it would misreport what is running.
+            board.activity = ("run", f"{name} is working  ({index}/{total})")
 
     def agent_repairing(self, name: str, attempt: int, attempts: int, error: str) -> None:
         board = self._board
@@ -630,6 +679,27 @@ class RichUI(PlainUI):
             return super().merge_started(survivors)
         noun = "output" if survivors == 1 else "outputs"
         board.activity = ("merge", f"merging {survivors} {noun} into one answer")
+
+    def council_convened(self) -> None:
+        board = self._board
+        if board is None:
+            return super().council_convened()
+        board.activity = ("council", "cross-examining the answer for real faults")
+
+    def council_ruled(self, improved: bool, weaknesses: str) -> None:
+        board = self._board
+        if board is None:
+            return super().council_ruled(improved, weaknesses)
+        if improved:
+            board.activity = ("council", f"refining: {first_line(weaknesses, 70)}")
+        else:
+            board.activity = ("council", "the answer stood - nothing worth changing")
+
+    def spend_updated(self, calls: int, cost_usd: float | None) -> None:
+        board = self._board
+        if board is None:
+            return super().spend_updated(calls, cost_usd)
+        board.spend = (calls, cost_usd)
 
     def answer_judged(self, done: bool, missing: str) -> None:
         board = self._board

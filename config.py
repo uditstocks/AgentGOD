@@ -12,9 +12,10 @@ from __future__ import annotations
 import functools
 import os
 import sys
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import anthropic
 from dotenv import load_dotenv
@@ -59,6 +60,16 @@ def _int_env(name: str, default: int) -> int:
 # How many specialised agents a single plan may contain.
 MAX_AGENTS = _int_env("MAX_AGENTS", 4)
 
+# How many agents may run at the same time. Parallelism only ever happens
+# between agents the plan's dependency graph proves independent, so this is
+# a ceiling on subprocesses, not a correctness knob. 1 disables it entirely.
+MAX_PARALLEL_AGENTS = max(1, _int_env("MAX_PARALLEL_AGENTS", 4))
+
+# Whether the council - an adversarial critic that cross-examines the merged
+# answer before the judge sees it - convenes. 'auto' convenes it only for
+# tasks the planner graded deep; 'always' and 'off' do what they say.
+COUNCIL = os.getenv("COUNCIL", "auto").strip().lower()
+
 # Hard wall-clock limit for one generated agent subprocess.
 AGENT_TIMEOUT_SECONDS = _int_env("AGENT_TIMEOUT_SECONDS", 300)
 
@@ -83,6 +94,25 @@ LLM_MAX_TOKENS = _int_env("LLM_MAX_TOKENS", 8192)
 # How hard the model works per call: low | medium | high | xhigh | max.
 # This is the knob that replaced temperature, which current models reject.
 LLM_EFFORT = os.getenv("LLM_EFFORT", "medium")
+
+# The effort scale, weakest first, for comparing two settings.
+_EFFORT_SCALE = ("low", "medium", "high", "xhigh", "max")
+
+
+def effort_for(complexity: str) -> str:
+    """How hard every call in a run works, given the planner's grade.
+
+    'simple' drops to low - a translation does not deserve a deliberation.
+    'deep' raises to high, but never *lowers* a stronger LLM_EFFORT the user
+    set on purpose. Anything else runs at the configured default, so a user
+    who never touches this sees exactly the behaviour they configured.
+    """
+    if complexity == "simple":
+        return "low"
+    if complexity == "deep":
+        configured = _EFFORT_SCALE.index(LLM_EFFORT) if LLM_EFFORT in _EFFORT_SCALE else 0
+        return _EFFORT_SCALE[max(configured, _EFFORT_SCALE.index("high"))]
+    return LLM_EFFORT
 
 # Upper bound on how much of one upstream result is forwarded to the next stage.
 MAX_CHARS_PER_INPUT = _int_env("MAX_CHARS_PER_INPUT", 6000)
@@ -156,6 +186,7 @@ def complete(
     max_tokens: int | None = None,
     usage: Usage | None = None,
     search: bool = False,
+    effort: str | None = None,
 ) -> str:
     """One Messages API call, returned as plain text.
 
@@ -171,15 +202,16 @@ def complete(
     request: dict[str, Any] = {
         "model": MODEL,
         "max_tokens": max_tokens or LLM_MAX_TOKENS,
-        "output_config": {"effort": LLM_EFFORT},
+        "output_config": {"effort": effort or LLM_EFFORT},
     }
     if system:
         request["system"] = system
     if search:
         request["tools"] = [web_search_tool()]
 
-    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    messages: list[Any] = [{"role": "user", "content": prompt}]
     client = get_client()
+    message: Any = None
     for _ in range(MAX_CONTINUATIONS + 1):
         message = client.messages.create(messages=messages, **request)
         if usage is not None:
@@ -203,6 +235,7 @@ def complete_structured(
     system: str | None = None,
     max_tokens: int | None = None,
     usage: Usage | None = None,
+    effort: str | None = None,
 ) -> _Schema:
     """One call whose reply is constrained to `output_format`, and validated.
 
@@ -212,14 +245,15 @@ def complete_structured(
     request: dict[str, Any] = {
         "model": MODEL,
         "max_tokens": max_tokens or LLM_MAX_TOKENS,
-        "output_config": {"effort": LLM_EFFORT},
+        "output_config": {"effort": effort or LLM_EFFORT},
         "output_format": output_format,
         "messages": [{"role": "user", "content": prompt}],
     }
     if system:
         request["system"] = system
 
-    message = get_client().messages.parse(**request)
+    # cast(Any): the typeshed for the SDK lags the live API's parse endpoint.
+    message = cast(Any, get_client().messages).parse(**request)
     if usage is not None:
         usage.record(message)
 
@@ -264,16 +298,25 @@ def estimate_cost(input_tokens: float, output_tokens: float) -> float | None:
 
 @dataclass
 class Usage:
-    """Running token/cost total for one task."""
+    """Running token/cost total for one task.
+
+    Safe to share across threads: independent agents are generated - and
+    repaired - in parallel, and a lost update here would silently under-bill
+    the run. The lock never leaves this class.
+    """
 
     calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
 
     def add(self, input_tokens: int, output_tokens: int) -> None:
-        self.calls += 1
-        self.input_tokens += input_tokens
-        self.output_tokens += output_tokens
+        with self._lock:
+            self.calls += 1
+            self.input_tokens += input_tokens
+            self.output_tokens += output_tokens
 
     def merge(self, other: Usage) -> None:
         """Fold another total into this one.
@@ -282,9 +325,10 @@ class Usage:
         the clarifying question is asked before `handle_task` exists. Their
         cost is still the user's, so it is added rather than quietly dropped.
         """
-        self.calls += other.calls
-        self.input_tokens += other.input_tokens
-        self.output_tokens += other.output_tokens
+        with self._lock:
+            self.calls += other.calls
+            self.input_tokens += other.input_tokens
+            self.output_tokens += other.output_tokens
 
     def record(self, response: Any) -> None:
         """Accumulate usage from a Messages API reply, if it reported any."""

@@ -109,7 +109,9 @@ def clarifying_question(task: str, usage: Usage | None = None) -> str | None:
     return question or None
 
 
-def judge(task: str, answer: str, usage: Usage | None = None) -> Verdict:
+def judge(
+    task: str, answer: str, usage: Usage | None = None, effort: str | None = None
+) -> Verdict:
     """Whether `answer` actually answers `task`.
 
     A judge that cannot see the answer cannot judge it, but a judge that reads
@@ -121,7 +123,11 @@ def judge(task: str, answer: str, usage: Usage | None = None) -> Verdict:
         shown = shown[:MAX_ANSWER_CHARS] + "\n[...truncated...]"
 
     verdict = complete_structured(
-        JUDGE_PROMPT.format(task=task, answer=shown), Verdict, max_tokens=1500, usage=usage
+        JUDGE_PROMPT.format(task=task, answer=shown),
+        Verdict,
+        max_tokens=1500,
+        usage=usage,
+        effort=effort,
     )
     # A "not done" with nothing to act on cannot drive a second attempt, so it
     # is treated as done - retrying on it would bill for the same answer twice.

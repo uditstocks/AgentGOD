@@ -154,3 +154,72 @@ def test_an_agent_built_against_an_older_runtime_is_not_current():
 
 def test_an_agent_that_is_not_in_the_library_is_not_current():
     assert not up_to_date("never_built_agent")
+
+
+# --- the reliability record: the library curates itself ------------------------
+
+
+def test_outcomes_accumulate_on_the_record():
+    remember("research_agent", "Gather facts", SOURCE)
+    library.record_outcome("research_agent", True)
+    library.record_outcome("research_agent", True)
+    library.record_outcome("research_agent", False)
+    entry = library.entry_for("research_agent")
+    assert entry is not None
+    assert (entry.wins, entry.losses) == (2, 1)
+
+
+def test_an_unknown_agent_takes_no_record():
+    library.record_outcome("ghost_agent", True)  # must not raise or create
+    assert library.entry_for("ghost_agent") is None
+
+
+def test_a_fresh_agent_is_trusted():
+    remember("research_agent", "Gather facts", SOURCE)
+    assert library.reliable("research_agent") is True
+    assert library.reliable("never_kept_agent") is True
+
+
+def test_one_unlucky_crash_never_retires_a_good_agent():
+    remember("research_agent", "Gather facts", SOURCE)
+    library.record_outcome("research_agent", False)
+    assert library.reliable("research_agent") is True
+
+
+def test_an_agent_that_fails_more_than_it_works_is_unreliable():
+    remember("research_agent", "Gather facts", SOURCE)
+    for _ in range(3):
+        library.record_outcome("research_agent", False)
+    assert library.reliable("research_agent") is False
+
+
+def test_enough_wins_outweigh_the_losses():
+    remember("research_agent", "Gather facts", SOURCE)
+    for _ in range(3):
+        library.record_outcome("research_agent", False)
+    for _ in range(3):
+        library.record_outcome("research_agent", True)
+    assert library.reliable("research_agent") is True
+
+
+# --- evolution: a repair is a new generation with a clean slate ----------------
+
+
+def test_a_plain_refresh_keeps_the_generation():
+    remember("writer_agent", "Write prose", SOURCE)
+    remember("writer_agent", "Write prose", SOURCE.replace("ok", "fine"))
+    entry = library.entry_for("writer_agent")
+    assert entry is not None
+    assert entry.generation == 1
+
+
+def test_an_evolution_advances_the_generation_and_wipes_the_record():
+    remember("writer_agent", "Write prose", SOURCE)
+    library.record_outcome("writer_agent", False)
+    library.record_outcome("writer_agent", False)
+    remember("writer_agent", "Write prose", SOURCE.replace("ok", "fixed"), evolved=True)
+    entry = library.entry_for("writer_agent")
+    assert entry is not None
+    assert entry.generation == 2
+    assert (entry.wins, entry.losses) == (0, 0)
+    assert library.reliable("writer_agent") is True

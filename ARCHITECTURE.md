@@ -52,17 +52,24 @@ Numbered lifecycle for one task:
 
 | Step | Module | What happens | LLM used? |
 |---|---|---|---|
-| 1 | `planner.py` | Task → `Plan` (list of `AgentSpec`) | ✅ structured output |
-| 2 | `generator.py` | Each `AgentSpec` → Python source | ✅ one call per agent (more if rejected) |
+| 1 | `planner.py` | Task → `Plan`: a complexity grade and a dependency DAG of `AgentSpec`s | ✅ structured output |
+| 1b | `taskgraph.py` | Sanitise the declared graph; order it; derive waves and closures | ❌ |
+| 2 | `generator.py` | Each `AgentSpec` → Python source, **all new agents generated in parallel** | ✅ one call per agent (more if rejected) |
 | 2b | `codeguard.py` | Reject unsafe/malformed source before it lands | ❌ |
 | 3 | `executor.py` | Source → file in `generated_agents/` | ❌ |
 | 4 | `executor.py` | Install vetted pip packages into an isolated venv | ❌ |
-| 5 | `executor.py` | Run each agent as a subprocess, in order | ❌ (the *agents* call the LLM) |
+| 5 | `executor.py` | Run the agents wave by wave - independent agents in parallel, dependent ones in sequence | ❌ (the *agents* call the LLM) |
 | 6 | `merger.py` | All outputs → one final response | ✅ always |
-| 6b | `judgment.py` | Answer checked against the request; agents rerun if short | ✅ one call, plus a full round per revision |
-| 7 | `library.py` | Remember each new agent for future tasks | ❌ |
+| 6b | `council.py` | Deep tasks only: an adversarial critic challenges the answer; real faults drive one refinement | ✅ one call, +1 when flawed |
+| 6c | `judgment.py` | Answer checked against the request; agents rerun if short | ✅ one call, plus a full round per revision |
+| 7 | `library.py` | Remember each new agent; record each reused agent's win or loss | ❌ |
 | 8 | `runlog.py` | Archive the answer to `runs/` | ❌ |
 | 9 | `inventory.py` | Clear the scratch copies | ❌ |
+
+Every LLM call in the run - and every generated agent's own calls, through
+`LLM_EFFORT` in its environment - runs at the effort the planner's grade
+selected: `simple` drops to `low`, `deep` raises to at least `high`, and
+`standard` runs at whatever the user configured (`config.effort_for`).
 
 ---
 
@@ -86,6 +93,10 @@ it goes, that usually means it deserves a new module.
 ### `planner.py` - task analysis
 - Defines the two Pydantic models that are the system's most important data
   structures (see §4).
+- Grades the task first (`Plan.complexity`: simple / standard / deep) -
+  declared before `agents` so the model sizes the work before designing the
+  team - and declares each agent's `depends_on`, which is what makes selective
+  parallelism possible.
 - `plan_agents(task)` makes one call through `complete_structured(...)`, which
   constrains the reply to the `Plan` schema with `output_format`. The shape is
   enforced by the API, so a malformed plan is a request error rather than
@@ -95,6 +106,19 @@ it goes, that usually means it deserves a new module.
   (`"../../../pwned"` → `"pwned"`), Windows device names are avoided, duplicates
   are disambiguated, and the agent count is bounded by the schema - not merely
   requested in the prompt.
+
+### `taskgraph.py` - the shape of the plan (no AI, no I/O)
+- Pure functions over anything with `.name` and `.depends_on`.
+- Declared dependencies are untrusted like everything else an LLM writes:
+  self and unknown references are dropped, a cycle is broken rather than
+  obeyed, and a plan that declares nothing falls back to the sequential
+  chain every plan had before dependencies existed - an empty graph means
+  the planner never thought about it, not independence.
+- `topological_order` makes list order and graph order agree; `waves` groups
+  the plan into rounds that may each run in parallel; `dependency_closure`
+  computes exactly which upstream outputs one agent receives - its declared
+  dependencies and theirs, never "whatever finished first", which would make
+  runs unrepeatable.
 
 ### `generator.py` - code generation
 - `AGENT_HEADER` is a **fixed, trusted runtime** - imports, the Messages API call,
@@ -154,6 +178,20 @@ it goes, that usually means it deserves a new module.
   Replacing the task with the critique is how a second attempt drifts onto the
   complaint instead of onto what the user actually asked for.
 
+### `council.py` - the adversarial reading
+- The judge checks *compliance*; the council checks *quality*, and only for
+  tasks graded deep - exactly the tasks where "meets every stated demand and
+  is still shallow" is the failure that matters.
+- One critic call names concrete faults (unsupported claims, reasoning that
+  does not carry its conclusion, the missing counter-case); if any are real,
+  one refinement call fixes what was named and preserves everything else.
+  Two calls at most, no agent reruns, and biased toward acquittal: a critic
+  that always objects bills every deep run twice and teaches the user to
+  ignore it. An empty refinement never replaces the answer it reviewed.
+- `COUNCIL=auto|always|off`; `Challenge.weaknesses` is declared before
+  `Challenge.flawed` for the same reason `missing` precedes `done` in the
+  judge - the model must state what it found before it rules.
+
 ### `merger.py` - synthesis
 - One LLM call that receives the task + all labelled outputs and writes the
   final answer. It **always runs**, including for a single agent: it is the only
@@ -169,6 +207,13 @@ it goes, that usually means it deserves a new module.
   Repairing an already-kept agent is the one case that writes without asking.
 - `describe_for_planner()` is injected into the planner prompt, so the model
   prefers an agent that already exists over inventing a near-duplicate.
+- **The library curates itself.** `record_outcome` writes a win or a loss
+  against every agent handed back from the library; `reliable()` retires one
+  that has failed at least three times and lost more than it won, so the next
+  task rebuilds it fresh instead of billing for the same crash again. A
+  repair that replaces a kept agent's source is an *evolution*
+  (`remember(..., evolved=True)`): the generation counter advances and the
+  record resets, because the code that earned those losses is gone.
 - The `.py` files are the source of truth; `index.json` is a rebuildable
   convenience, so a corrupt index never costs the user their library.
 - Reuse is only sound because the generator is forbidden from baking the
@@ -184,13 +229,20 @@ it goes, that usually means it deserves a new module.
   Keeping an agent is `library.remember`'s job, not this module's.
 
 ### `orchestrator.py` - the conductor
-- `handle_task(task)` calls the five phases in order, reports each notable
+- `handle_task(task)` calls the six phases in order, reports each notable
   moment to a `TaskEvents` object, and returns a `TaskResult`. It never
   prints: presentation is the caller's problem.
 - It owns **retry policy** (`_run_with_repair`): a failed agent is regenerated
   from its own stderr, up to `AGENT_REPAIR_ATTEMPTS` times. The generator
   already has the code and the traceback, so a crash is a repairable event
   rather than lost work.
+- It owns **scheduling**: `_for_each_in_waves` drives generation-independent
+  work and each execution wave through a thread pool (ceiling:
+  `MAX_PARALLEL_AGENTS`), while results are absorbed on the caller's thread
+  so shared state is mutated from exactly one place. `_SharedEvents`
+  serialises event emission, so two workers can never interleave inside one
+  renderer. An agent's `previous_outputs` is always its dependency closure -
+  parallel or not, a run is repeatable.
 - No other business logic of its own - it should read like the flow diagram.
 
 ### `events.py` - the presentation seam
@@ -310,12 +362,16 @@ message bus - just data passed forward.
 For a task planned with N agents:
 
 ```
-1 call   planner        (structured output)
-N calls  generator      (one per agent; +1 per rejected or repaired attempt)
-N calls  inside agents  (each generated agent calls the LLM itself at runtime)
+1 call   planner        (structured output; also grades the task)
+N calls  generator      (one per agent; +1 per rejected or repaired attempt;
+                         new agents are generated in parallel)
+N calls  inside agents  (each generated agent calls the LLM itself at runtime;
+                         independent agents run in parallel waves)
 1 call   merger         (always - it enforces the task's own constraints)
+1 call   judge          (unless TASK_REVISIONS=0; + a full round per revision)
++1..2    council        (deep tasks only: challenge, + refine when flawed)
 ─────────────────────────
-total: 2N + 2 calls, plus retries
+total: 2N + 3 calls, plus retries, revisions and the council's sitting
 ```
 
 Every call is accounted for. The main agent's tokens come from
@@ -349,12 +405,14 @@ AgentGOD/
 ├── ui.py                 # presentation surface + PlainUI + renderer choice
 ├── richui.py             # the rich renderer (loaded only when rich exists)
 ├── events.py             # TaskEvents - the pipeline/presentation seam
-├── orchestrator.py       # sequences the pipeline + retry policy
-├── planner.py            # LLM: task → Plan (and the trust boundary)
+├── orchestrator.py       # sequences the pipeline + retry policy + scheduling
+├── planner.py            # LLM: task → Plan (grade + DAG; the trust boundary)
+├── taskgraph.py          # the plan's shape: waves and closures (no LLM)
 ├── generator.py          # LLM: AgentSpec → source code (trusted header + run())
 ├── codeguard.py          # static validation of generated code
 ├── executor.py           # files, pip, subprocesses (no LLM)
 ├── merger.py             # LLM: outputs → final answer
+├── council.py            # LLM: adversarial review of deep answers
 ├── library.py            # remembers agents for reuse (no LLM)
 ├── runlog.py             # archives each answer to runs/ (no LLM)
 ├── inventory.py          # clears scratch copies (no LLM)
@@ -420,19 +478,20 @@ trust boundary** - the roadmap's Docker-per-agent item is the real fix.
 **Medium (a few commits each)**
 - [ ] **Inventory reuse**: before planning, search `inventory/*/TASK.txt` for a
       similar past task and offer to rerun that saved team.
-- [ ] **Parallel execution**: let the planner mark agents as independent, run
-      those with `concurrent.futures`, keep dependent ones sequential. Needs a
-      `depends_on` field on `AgentSpec` - be careful not to reintroduce silent
-      data loss when a dependency is mis-declared.
+- [x] **Parallel execution**: the planner marks dependencies (`depends_on`),
+      `taskgraph.py` derives waves, and independent agents run on a thread
+      pool while dependent ones stay sequential. Silent data loss is designed
+      out: each agent receives its dependency closure, and a plan that
+      declares nothing falls back to the sequential chain.
 - [ ] Stream agent output instead of buffering it to completion.
 
 **Large (multi-day)**
-- [ ] Give generated agents **tools** (web search, file reading) instead of a
-      single bare LLM call.
+- [x] Give generated agents **tools** (web search) instead of a single bare
+      LLM call. File reading still pending.
 - [ ] Sandbox execution (Docker container per agent) so generated code can't
       touch your filesystem or network freely.
-- [ ] A planner that outputs a DAG instead of a list, with a topological-sort
-      executor.
+- [x] A planner that outputs a DAG instead of a list, with a topological-sort
+      executor (`taskgraph.py`).
 - [ ] Simple web UI (FastAPI + one HTML page) replacing the CLI.
 
 ---

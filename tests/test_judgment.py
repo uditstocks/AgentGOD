@@ -14,7 +14,7 @@ def fake_reply(monkeypatch, reply):
     """Answer the next complete_structured call with `reply`, and record the prompt."""
     seen: dict = {}
 
-    def stub(prompt, output_format, system=None, max_tokens=None, usage=None):
+    def stub(prompt, output_format, system=None, max_tokens=None, usage=None, effort=None):
         seen["prompt"] = prompt
         if usage is not None:
             usage.add(10, 5)

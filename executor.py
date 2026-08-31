@@ -207,15 +207,21 @@ def install_dependencies(specs: list[AgentSpec]) -> DependencyReport:
     return report
 
 
-def _child_env() -> dict[str, str]:
+def _child_env(effort: str | None = None) -> dict[str, str]:
     """Environment for an agent subprocess.
 
     UTF-8 is forced both ways: without it a piped child on Windows writes
     cp1252, the parent decodes UTF-8, and the agent's output is lost.
+
+    `effort` is how the run's complexity grade reaches the generated agents:
+    their trusted runtime reads LLM_EFFORT from the environment, so a simple
+    task's agents answer fast and cheap while a deep task's agents think.
     """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    if effort:
+        env["LLM_EFFORT"] = effort
     return env
 
 
@@ -252,6 +258,7 @@ def execute_agent(
     task: str,
     previous_outputs: dict[str, str],
     python_exe: str | None = None,
+    effort: str | None = None,
 ) -> AgentResult:
     """Run one agent file as a subprocess.
 
@@ -284,7 +291,7 @@ def execute_agent(
             encoding="utf-8",
             errors="replace",
             timeout=AGENT_TIMEOUT_SECONDS,
-            env=_child_env(),
+            env=_child_env(effort),
         )
     except subprocess.TimeoutExpired:
         return failure(f"timed out after {AGENT_TIMEOUT_SECONDS}s")

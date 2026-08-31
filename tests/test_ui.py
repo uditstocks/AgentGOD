@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -28,6 +29,7 @@ class FakeResult:
     reused: list = field(default_factory=list)
     built: list = field(default_factory=list)
     duration_seconds: float = 12.3
+    council_improved: bool = False
 
     def cost_summary(self) -> str:
         return "4 LLM calls · 1,000 in / 500 out tokens · ~$0.0010"
@@ -262,3 +264,59 @@ def test_rich_activity_spinner_is_cached_so_it_animates():
     second = board._activity()
     assert isinstance(first, Padding) and isinstance(second, Padding)
     assert first.renderable is second.renderable
+
+
+# --- the new moments: waves, the council, the grade ----------------------------
+
+
+def test_plain_announces_only_genuine_parallelism(capsys):
+    surface = PlainUI()
+    surface.wave_started(1, 2, ["research_agent", "web_agent"])
+    surface.wave_started(2, 2, ["summary_agent"])
+    out = capsys.readouterr().out
+    assert "research_agent + web_agent in parallel" in out
+    assert "summary_agent" not in out  # a wave of one is just the next agent
+
+
+def test_plain_narrates_the_council(capsys):
+    surface = PlainUI()
+    surface.council_convened()
+    surface.council_ruled(True, "1. cite the source")
+    surface.council_ruled(False, "")
+    out = capsys.readouterr().out
+    assert "cross-examining" in out
+    assert "cite the source" in out
+    assert "nothing worth changing" in out
+
+
+def test_plain_plan_names_the_grade_and_the_wiring(capsys):
+    plan: Any = SimpleNamespace(
+        reasoning="research feeds summary",
+        complexity="deep",
+        agents=[
+            SimpleNamespace(name="research_agent", role="gather facts", depends_on=[]),
+            SimpleNamespace(
+                name="summary_agent", role="condense", depends_on=["research_agent"]
+            ),
+        ],
+    )
+    PlainUI().plan_ready(plan)
+    out = capsys.readouterr().out
+    assert "graded deep" in out
+    assert "(needs research_agent)" in out
+
+
+def test_plain_run_summary_mentions_a_council_refinement(capsys):
+    result = FakeResult(council_improved=True)
+    PlainUI().run_succeeded(result, None)
+    out = capsys.readouterr().out
+    assert "council" in out.lower()
+
+
+def test_a_plan_without_the_new_fields_still_renders(capsys):
+    """Older callers and fakes carry no grade or wiring; display must not care."""
+    bare: Any = fake_plan()
+    PlainUI().plan_ready(bare)
+    out = capsys.readouterr().out
+    assert "research_agent" in out
+    assert "graded" not in out

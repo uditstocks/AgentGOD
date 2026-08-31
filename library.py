@@ -44,6 +44,13 @@ class LibraryEntry:
     # against. 0 means it predates the stamp, which is treated as too old:
     # an agent cannot call a helper that did not exist when it was written.
     runtime: int = 0
+    # The reliability record: how often this agent finished the job it was
+    # handed back for, and how often it crashed instead. `generation` counts
+    # rewrites - every repair that replaces the stored source is an evolution,
+    # and evolving wipes the losses, because the code that earned them is gone.
+    wins: int = 0
+    losses: int = 0
+    generation: int = 1
 
     @property
     def path(self) -> Path:
@@ -57,6 +64,9 @@ class LibraryEntry:
             "last_used": self.last_used,
             "built_for": self.built_for,
             "runtime": self.runtime,
+            "wins": self.wins,
+            "losses": self.losses,
+            "generation": self.generation,
         }
 
 
@@ -92,6 +102,9 @@ def _read_index() -> dict[str, LibraryEntry]:
             last_used=str(record.get("last_used", "")),
             built_for=str(record.get("built_for", "")),
             runtime=int(record.get("runtime", 0) or 0),
+            wins=int(record.get("wins", 0) or 0),
+            losses=int(record.get("losses", 0) or 0),
+            generation=int(record.get("generation", 1) or 1),
         )
     return entries
 
@@ -187,8 +200,15 @@ def audit() -> dict[str, list[str]]:
     return found
 
 
-def remember(name: str, role: str, source: str, task: str = "") -> bool:
-    """Store (or refresh) one agent. Returns False if it could not be written."""
+def remember(name: str, role: str, source: str, task: str = "", evolved: bool = False) -> bool:
+    """Store (or refresh) one agent. Returns False if it could not be written.
+
+    `evolved` marks a rewrite of an agent that was already kept - a repair
+    that replaced the stored source. That advances the generation counter and
+    wipes the reliability record: the code that earned those losses no longer
+    exists, and judging the new code by the old code's crashes would retire
+    an agent that may now be fine.
+    """
     try:
         LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
         target = (LIBRARY_DIR / f"{name}.py").resolve()
@@ -204,6 +224,10 @@ def remember(name: str, role: str, source: str, task: str = "") -> bool:
     entry.created = entry.created or _now()
     entry.built_for = task.strip() or entry.built_for
     entry.runtime = AGENT_RUNTIME_VERSION
+    if evolved:
+        entry.generation += 1
+        entry.wins = 0
+        entry.losses = 0
     entries[name] = entry
     _write_index(entries)
     return True
@@ -218,6 +242,44 @@ def record_use(name: str) -> None:
     entry.uses += 1
     entry.last_used = _now()
     _write_index(entries)
+
+
+def record_outcome(name: str, ok: bool) -> None:
+    """Add one run's result to an agent's reliability record.
+
+    Called only for agents handed back from the library: a newly built agent
+    that fails is simply never offered for keeping, so its record starts at
+    zero the day it is kept.
+    """
+    entries = _read_index()
+    entry = entries.get(name)
+    if entry is None:
+        return
+    if ok:
+        entry.wins += 1
+    else:
+        entry.losses += 1
+    _write_index(entries)
+
+
+# An agent is retired for unreliability only after this many failures, so one
+# unlucky crash - a timeout, a transient API error - never costs a good agent.
+MIN_LOSSES_TO_RETIRE = 3
+
+
+def reliable(name: str) -> bool:
+    """Whether the stored agent's own record justifies handing it back again.
+
+    The third promise the library makes, alongside `reusable` and
+    `up_to_date`. Repair exists for the run in progress; this is the longer
+    memory - an agent that has now failed more tasks than it finished is a
+    liability being re-billed every run, and it is retired so the next task
+    rebuilds it fresh. Agents with no record yet are trusted.
+    """
+    entry = entry_for(name)
+    if entry is None:
+        return True
+    return entry.losses < MIN_LOSSES_TO_RETIRE or entry.wins >= entry.losses
 
 
 def forget(name: str) -> bool:

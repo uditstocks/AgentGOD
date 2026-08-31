@@ -9,6 +9,12 @@ pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
 
+[tool.pyright]
+# The machine-written agents in inventory/ and generated_agents/ follow the
+# trusted runtime's own conventions; type-checking the main codebase must not
+# depend on what the machine last wrote there.
+exclude = ["**/__pycache__", ".venv", ".agent_venv", "inventory", "generated_agents", "runs"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

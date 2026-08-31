@@ -502,6 +502,7 @@ def generate_agent_code(
     feedback: str | None = None,
     usage: Usage | None = None,
     task: str = "",
+    effort: str | None = None,
 ) -> str:
     """Return validated, ready-to-run source for one agent.
 
@@ -535,7 +536,7 @@ def generate_agent_code(
                 problems="\n".join(f"- {problem}" for problem in problems)
             )
 
-        reply = complete(attempt_prompt, max_tokens=8000, usage=usage)
+        reply = complete(attempt_prompt, max_tokens=8000, usage=usage, effort=effort)
         body = _strip_code_fences(reply).strip()
         source = assemble_agent(body, spec)
         # Safety first, then reusability: there is no point telling the model

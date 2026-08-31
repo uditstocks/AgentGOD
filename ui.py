@@ -142,6 +142,8 @@ class PlainUI(TaskEvents):
                 print(f"  - {name}: {first_line(error, 150)}")
 
         print(f"\n{result.duration_seconds:.1f}s · {result.cost_summary()}")
+        if getattr(result, "council_improved", False):
+            print("The council reviewed the answer and refined it before delivery.")
         if result.reused:
             print(f"Reused free from library: {', '.join(result.reused)}")
         if result.built:
@@ -169,7 +171,12 @@ class PlainUI(TaskEvents):
     def plan_ready(self, plan: Plan) -> None:
         print(f"  {plan.reasoning}")
         for spec in plan.agents:
-            print(f"  - {spec.name}: {spec.role}")
+            needs = getattr(spec, "depends_on", [])
+            wiring = f"  (needs {', '.join(needs)})" if needs else ""
+            print(f"  - {spec.name}: {spec.role}{wiring}")
+        complexity = getattr(plan, "complexity", "standard")
+        if complexity != "standard":
+            print(f"  graded {complexity} - the whole run spends effort accordingly")
 
     def agent_retired(self, name: str, reason: str) -> None:
         print(f"  retired {name} from the library: {reason}")
@@ -189,6 +196,12 @@ class PlainUI(TaskEvents):
         if report.installed:
             print(f"  installed: {', '.join(report.installed)}")
 
+    def wave_started(self, index: int, total: int, names: list[str]) -> None:
+        # A wave of one is just the next agent; only genuine parallelism is
+        # worth a line of its own.
+        if len(names) > 1:
+            print(f"  wave {index}/{total}: {' + '.join(names)} in parallel")
+
     def agent_started(self, name: str, index: int, total: int) -> None:
         print(f"  [{index}/{total}] {name} running...")
 
@@ -207,6 +220,15 @@ class PlainUI(TaskEvents):
     def merge_started(self, survivors: int) -> None:
         noun = "output" if survivors == 1 else "outputs"
         print(f"  merging {survivors} {noun}")
+
+    def council_convened(self) -> None:
+        print("  the council is cross-examining the answer")
+
+    def council_ruled(self, improved: bool, weaknesses: str) -> None:
+        if improved:
+            print(f"  the council found real faults; refined: {first_line(weaknesses, 90)}")
+        else:
+            print("  the council found nothing worth changing")
 
     def answer_judged(self, done: bool, missing: str) -> None:
         if done:

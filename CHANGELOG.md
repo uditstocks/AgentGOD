@@ -1,5 +1,84 @@
 # Changelog
 
+## It thinks in graphs, spends effort where it matters, and argues with itself - 2026-08-31
+
+The plan is no longer a queue, the effort is no longer flat, and the answer
+no longer leaves the building unchallenged.
+
+### The plan is a graph, and independence runs in parallel
+
+- New `taskgraph.py`. The planner now declares **`depends_on`** per agent, and
+  the plan becomes a real dependency DAG: sanitised (self and unknown
+  references dropped), cycle-proof (a cycle is broken, never obeyed), and
+  topologically ordered so list order and graph order always agree. A plan
+  that declares nothing falls back to the old sequential chain - the one
+  wiring that is always safe.
+- The executor runs the graph in **waves**: everything in a wave has all of
+  its inputs before the wave starts, so a wave's agents run at the same time
+  on a thread pool - parallelism exists exactly where the graph proves it
+  changes nothing about the data each agent sees. Chains still run as chains.
+  `MAX_PARALLEL_AGENTS` is the ceiling; `1` disables it.
+- Each agent receives **exactly its dependency closure** - its declared
+  dependencies and theirs, never "whatever happened to finish first" - and
+  the generator writes that exact contract into the agent's prompt.
+- **Code generation is parallel too.** Newly planned agents are all written at
+  once; their generation calls share nothing. This was the most expensive
+  phase of a run, and independence makes it the fastest.
+- `Usage` is now thread-safe, so parallel calls cannot under-bill the run.
+
+### The effort dial
+
+- The planner grades every task first: **`simple` / `standard` / `deep`**
+  (`Plan.complexity`, graded before the team is designed - field order is the
+  prompt). `effort_for()` maps the grade onto every call that follows:
+  generation, merging, judging, and the generated agents' own runtime calls,
+  which inherit it through `LLM_EFFORT` in their environment. A translation
+  no longer deliberates; an analysis no longer rushes. A stronger
+  `LLM_EFFORT` the user set on purpose is never lowered.
+
+### The council
+
+- New `council.py`. For tasks graded deep, an **adversarial critic reads the
+  merged answer before the judge does** - hunting for unsupported claims,
+  reasoning that does not carry its conclusion, and the counter-case a
+  competent reviewer would demand. Real faults drive one refinement pass that
+  fixes what was named and preserves everything else; a sound answer stands,
+  unbilled. Two calls at most, no agent reruns, biased toward acquittal like
+  every self-check here. `COUNCIL=auto|always|off` (default `auto`).
+
+### The library curates itself
+
+- Every reused agent now carries a **reliability record**: wins and losses,
+  written by the orchestrator after every run it was handed back for. An
+  agent that has failed three or more times and lost more than it won is
+  **retired automatically** at the next lookup and rebuilt fresh - repair
+  fixes a run; this is the longer memory.
+- Repairing an already-kept agent is recorded as an **evolution**: the
+  generation counter advances and the record resets, because the code that
+  earned those losses no longer exists.
+
+### The interface keeps up
+
+- The live board's phase rail shows all **six** phases again
+  (`PLAN ▸ FORGE ▸ DEPS ▸ RUN ▸ MERGE ▸ CHECK` - the sixth had been missing,
+  so the rail silently degraded to bare numbers).
+- The board shows the task's **grade**, a **live spend meter** (calls and
+  estimated cost accruing while the run works), **wave lines**
+  (`wave 2/3 · research_agent + web_agent in parallel`), a `∥` marker on
+  agents genuinely running at once, and the council's cross-examination as a
+  visible activity. The final summary names the grade and whether the council
+  refined the answer. Plain mode prints the same facts as plain lines.
+- New **`/stats`** - the lifetime dashboard from disk: runs archived, agents
+  kept, free reuses, evolutions, and a reliability leaderboard. `/library`
+  now shows each agent's record (`3W/1L · gen 2`) beside its uses.
+
+### Proof
+
+- 526 tests (was 463), ruff clean, pyright 0 errors (was 6). New suites for
+  the graph, the council, the effort dial and the reliability record; the
+  parallel paths are pinned by tests that assert each agent saw exactly its
+  closure and nothing else.
+
 ## It looks things up, and it checks its own work - 2026-08-26
 
 Two things AgentGod could not do: find out anything that happened after the

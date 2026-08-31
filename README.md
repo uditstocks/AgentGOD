@@ -7,7 +7,7 @@
 ### One agent that writes other agents - runs them, merges their answers, and deletes them.
 
 ![python](https://img.shields.io/badge/python-3.10%2B-334155?style=flat-square&labelColor=0d1117)
-![tests](https://img.shields.io/badge/tests-463%20passed-15803d?style=flat-square&labelColor=0d1117)
+![tests](https://img.shields.io/badge/tests-526%20passed-15803d?style=flat-square&labelColor=0d1117)
 ![ruff](https://img.shields.io/badge/ruff-clean-15803d?style=flat-square&labelColor=0d1117)
 ![pyright](https://img.shields.io/badge/pyright-0%20errors-15803d?style=flat-square&labelColor=0d1117)
 ![model](https://img.shields.io/badge/model-claude--sonnet--5-334155?style=flat-square&labelColor=0d1117)
@@ -177,12 +177,12 @@ from nothing. It never does the work itself.
          │
          ▼
    ┌───────────┐
-   │  PLANNER  │   decides how many agents this needs, and what each is for
+   │  PLANNER  │   grades the task, decides the team, and wires who feeds whom
    └─────┬─────┘
-         │  1–4 specifications
+         │  1–4 specifications, as a dependency graph
          ▼
    ┌───────────┐
-   │ GENERATOR │   writes the one function each agent will execute
+   │ GENERATOR │   writes every new agent - all of them at once, in parallel
    └─────┬─────┘
          │  source, per agent
          ▼
@@ -192,14 +192,19 @@ from nothing. It never does the work itself.
          │  cleared
          ▼
    ┌───────────┐
-   │  EXECUTOR │   runs it in isolation, against a clock
-   └─────┬─────┘
+   │  EXECUTOR │   runs the graph in waves - independent agents side by side,
+   └─────┬─────┘   dependent ones in strict sequence, each against a clock
          │  output - or a reason it failed
          ▼
    ┌───────────┐
    │   MERGER  │   collapses every voice into one answer
    └─────┬─────┘
          │  a finished answer
+         ▼
+   ┌───────────┐
+   │  COUNCIL  │   deep tasks only: an adversarial critic cross-examines the
+   └─────┬─────┘   answer, and real faults drive one refinement pass
+         │  it survives the reading
          ▼
    ┌───────────┐
    │ JUDGEMENT │   reads it back against the request  ──┐  short?
@@ -227,6 +232,49 @@ Agents can also **search the web**. That runs server-side at the API, so a
 generated agent stays standard-library-only and gains no new reach of its own:
 it asks a question and reads an answer. What it cannot do is browse - no
 logging in, no clicking through a site, no filling in a form.
+
+---
+
+## Where the thinking goes
+
+Most systems spend the same effort on "translate good morning" as on "analyse
+this acquisition". This one budgets like a person would.
+
+**The planner grades every task first** - `simple`, `standard` or `deep` -
+and the grade sets the reasoning effort of *every* call that follows: the
+code generation, the merge, the judging, and the generated agents' own calls
+at runtime. A translation stops deliberating; an analysis stops rushing. A
+stronger `LLM_EFFORT` you set yourself is never lowered.
+
+**The plan is a graph, not a queue.** The planner declares which agents feed
+which, and only a proven-independent pair ever runs in parallel:
+
+```
+  wave 1     research_agent  ∥  market_data_agent      side by side
+                    └───────┬───────┘
+  wave 2             analysis_agent                    waits for both
+                            │
+  wave 3              writer_agent                     waits for the analysis
+```
+
+Everything in a wave has every input it needs before the wave starts, so
+running them together is exactly as correct as running them one by one - and
+a plan that is genuinely a chain still runs as a chain. Declared dependencies
+are sanitised like everything else the model writes: unknown names are
+dropped, a cycle is broken rather than obeyed, and a plan that declares
+nothing falls back to the old safe sequence.
+
+**Deep answers face the council.** Before the judge checks compliance, an
+adversarial critic reads the merged answer the way its toughest reviewer
+would - unsupported claims, reasoning that does not carry its conclusion, the
+counter-case that was never weighed. Real faults drive one refinement pass
+that fixes exactly what was named; a sound answer stands, unbilled. Two calls
+at most, and only for tasks graded deep.
+
+**The library keeps score on itself.** Every reused agent's run is recorded
+as a win or a loss. One that has failed more tasks than it finished is
+retired automatically and rebuilt fresh; a repaired agent advances a
+generation and starts with a clean record. `/stats` shows the ledger.
 
 ---
 
@@ -392,7 +440,7 @@ ranked by how often they have actually been used.
   $ pip install pytest ruff pyright
 
   $ pytest
-+ 463 passed
++ 526 passed
 
   $ ruff check .
 + All checks passed!
@@ -416,6 +464,8 @@ Everything below has a working default. Only the key is required.
 | `ANTHROPIC_API_KEY` | - *(required)* | Access to the model |
 | `MODEL` | `claude-sonnet-5` | Any Claude model the Messages API serves |
 | `MAX_AGENTS` | `4` | Ceiling on team size |
+| `MAX_PARALLEL_AGENTS` | `4` | How many independent agents may run at once. `1` disables parallelism |
+| `COUNCIL` | `auto` | The adversarial review: `auto` (deep tasks only), `always`, `off` |
 | `AGENT_TIMEOUT_SECONDS` | `300` | Hard deadline per running agent |
 | `AGENT_REPAIR_ATTEMPTS` | `2` | Rewrites allowed for a crashing agent |
 | `CODEGEN_ATTEMPTS` | `3` | Rewrites allowed for invalid generated code |
@@ -442,12 +492,14 @@ plain text automatically.
   ui.py               the presentation surface - and its plain-text fallback
   richui.py           the live interface: phase rail, agent board, panels
   events.py           the seam: the pipeline emits, the interface draws
-  orchestrator.py     the architect - sequences everything, owns retries
-  planner.py          task → team specification (and the security boundary)
+  orchestrator.py     the architect - sequences everything, owns retries and waves
+  planner.py          task → a graded team specification, wired as a graph
+  taskgraph.py        the plan's shape - waves, closures, cycle-proofing
   generator.py        specification → source code
   codeguard.py        reads that source before it is trusted
   executor.py         files, subprocesses, timeouts - no model calls
   merger.py           every output → one voice
+  council.py          the adversarial reading a deep answer must survive
   library.py          remembers every agent, hands it back free
   runlog.py           archives the answer to runs/
   inventory.py        clears the scratch copies
@@ -466,10 +518,12 @@ One file, one responsibility. The reasoning behind every decision is in
 
 This is not pretending to be more than it is.
 
-Agents run in sequence, not in parallel - there is an order here, not yet a
-scheduler. They can look something up, but they cannot browse: no logging in,
-no clicking through a site, no filling in a form. They do not write to your
-files, run your code, or remember a previous run within a task.
+Agents run in parallel only when the plan's own graph proves them independent;
+everything else stays strictly sequential, because an invented ordering is
+how data silently goes missing. They can look something up, but they cannot
+browse: no logging in, no clicking through a site, no filling in a form. They
+do not write to your files, run your code, or remember a previous run within
+a task.
 
 What is here is exact. What is not here has not been claimed.
 

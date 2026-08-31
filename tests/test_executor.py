@@ -234,3 +234,29 @@ def test_no_dependencies_touches_nothing(monkeypatch):
     spec = AgentSpec(name="plain_agent", role="r", instructions="i")
     report = install_dependencies([spec])
     assert (report.installed, report.refused, report.failed) == ([], [], [])
+
+
+# --- the effort dial reaches the generated agents ------------------------------
+
+
+def test_the_runs_effort_grade_reaches_the_agent_environment(tmp_path):
+    agent = write_agent(
+        tmp_path,
+        "effort_agent",
+        "import os\nprint(os.environ.get('LLM_EFFORT', 'unset'))\n",
+    )
+    result = execute_agent(agent, "t", {}, python_exe=PYTHON, effort="high")
+    assert result.ok
+    assert result.output == "high"
+
+
+def test_no_grade_leaves_the_environment_alone(tmp_path, monkeypatch):
+    monkeypatch.delenv("LLM_EFFORT", raising=False)
+    agent = write_agent(
+        tmp_path,
+        "effort_agent",
+        "import os\nprint(os.environ.get('LLM_EFFORT', 'unset'))\n",
+    )
+    result = execute_agent(agent, "t", {}, python_exe=PYTHON)
+    assert result.ok
+    assert result.output == "unset"

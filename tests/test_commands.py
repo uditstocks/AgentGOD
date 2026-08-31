@@ -24,7 +24,9 @@ def test_an_argument_is_kept():
 
 
 def test_case_is_ignored():
-    assert parse("/HELP").name == "help"
+    command = parse("/HELP")
+    assert command is not None
+    assert command.name == "help"
 
 
 @pytest.mark.parametrize("text", ["write a haiku", "", "   ", "/", "http://x/y"])
@@ -144,3 +146,62 @@ def test_audit_does_not_accuse_agents_it_cannot_check(library_dir):
     text = handle(Command("audit"))
     assert "legacy_agent" in text
     assert "Not checkable" in text
+
+
+# --- the /stats dashboard -------------------------------------------------------
+
+
+def test_stats_with_nothing_on_disk_says_so(tmp_path, monkeypatch):
+    import config
+    import library
+
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(library, "INVENTORY_DIR", tmp_path / "inventory")
+    monkeypatch.setattr(library, "LIBRARY_DIR", tmp_path / "inventory" / "agents")
+    monkeypatch.setattr(library, "INDEX_PATH", tmp_path / "inventory" / "index.json")
+
+    command = parse("/stats")
+    assert command is not None
+    reply = handle(command)
+    assert "Nothing to count yet" in reply
+
+
+def test_stats_shows_the_library_and_reliability(tmp_path, monkeypatch):
+    import config
+    import library
+
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(library, "INVENTORY_DIR", tmp_path / "inventory")
+    monkeypatch.setattr(library, "LIBRARY_DIR", tmp_path / "inventory" / "agents")
+    monkeypatch.setattr(library, "INDEX_PATH", tmp_path / "inventory" / "index.json")
+
+    source = "def run(task, previous_outputs):\n    return 'ok'\n"
+    library.remember("research_agent", "gather facts", source)
+    library.record_outcome("research_agent", True)
+    library.record_outcome("research_agent", False)
+
+    command = parse("/stats")
+    assert command is not None
+    reply = handle(command)
+    assert "research_agent" in reply
+    assert "1W/1L" in reply
+
+
+def test_library_listing_carries_the_record(tmp_path, monkeypatch):
+    import library
+
+    monkeypatch.setattr(library, "INVENTORY_DIR", tmp_path / "inventory")
+    monkeypatch.setattr(library, "LIBRARY_DIR", tmp_path / "inventory" / "agents")
+    monkeypatch.setattr(library, "INDEX_PATH", tmp_path / "inventory" / "index.json")
+
+    source = "def run(task, previous_outputs):\n    return 'ok'\n"
+    library.remember("writer_agent", "write prose", source)
+    library.remember("writer_agent", "write prose", source, evolved=True)
+    library.record_outcome("writer_agent", True)
+
+    command = parse("/library")
+    assert command is not None
+    reply = handle(command)
+    assert "writer_agent" in reply
+    assert "1W/0L" in reply
+    assert "gen 2" in reply

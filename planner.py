@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import re
 import textwrap
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from codeguard import ALLOWED_PACKAGES
 from config import MAX_AGENTS, Usage, complete_structured
+from taskgraph import (
+    sanitise_dependencies,
+    topological_order,
+    wire_sequential_fallback,
+)
 
 # An agent name becomes a filename and a dict key, so it must be a plain
 # snake_case identifier. Anything else is a path-traversal risk.
@@ -50,6 +56,12 @@ class AgentSpec(BaseModel):
     instructions: str = Field(
         description="Detailed instructions this agent must follow to do its single job"
     )
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description="Names of agents in THIS plan whose outputs this agent needs, "
+        "and only those. Agents whose dependencies are all met run at the same "
+        "time, so leave this empty for an agent that works from the task alone.",
+    )
     dependencies: list[str] = Field(
         default_factory=list,
         description="Extra pip packages this agent needs (usually none - the whole "
@@ -61,6 +73,25 @@ class AgentSpec(BaseModel):
     @classmethod
     def _validate_name(cls, value: str) -> str:
         return safe_agent_name(value)
+
+    @field_validator("depends_on")
+    @classmethod
+    def _validate_depends_on(cls, value: list[str]) -> list[str]:
+        """Reduce each declared dependency to the same safe form as a name.
+
+        Agent names are sanitised, so the references to them must be run
+        through the identical reduction or "Research Agent" would never match
+        the `research_agent` it plainly means. A name that cannot be made
+        safe is dropped rather than fatal: it could never match any agent,
+        so it is a wire to nowhere, not a reason to fail the plan.
+        """
+        cleaned: list[str] = []
+        for raw in value:
+            try:
+                cleaned.append(safe_agent_name(raw))
+            except ValueError:
+                continue
+        return cleaned
 
     @field_validator("role", "instructions")
     @classmethod
@@ -74,11 +105,22 @@ class AgentSpec(BaseModel):
 class Plan(BaseModel):
     """The full team of agents required for the task.
 
-    `agents` is declared before `reasoning` on purpose: structured output is
-    generated in field order, so the model describes the team it actually
-    emitted instead of committing in prose to agents it then omits.
+    Field order is deliberate throughout, because structured output is
+    generated in that order: `complexity` comes first so the task is sized
+    before the team is designed, and `agents` comes before `reasoning` so the
+    model describes the team it actually emitted instead of committing in
+    prose to agents it then omits.
     """
 
+    complexity: Literal["simple", "standard", "deep"] = Field(
+        default="standard",
+        description="How much thinking this task deserves. 'simple': one obvious "
+        "step with a short answer (a translation, a one-liner, a lookup). "
+        "'deep': high stakes or real intellectual difficulty - research, "
+        "analysis, strategy, long-form writing, non-trivial code - where a "
+        "wrong or shallow answer costs the user something. Everything else "
+        "is 'standard'. The whole run spends effort and money accordingly.",
+    )
     agents: list[AgentSpec] = Field(
         min_length=1,
         max_length=MAX_AGENTS,
@@ -127,6 +169,22 @@ class Plan(BaseModel):
         The sort is stable, so a plan that was already sensible is untouched.
         """
         self.agents = sorted(self.agents, key=lambda spec: stage_rank(spec.name, spec.role))
+        return self
+
+    @model_validator(mode="after")
+    def _wire_the_graph(self) -> Plan:
+        """Make the declared dependencies honest, then order the plan by them.
+
+        Runs after deduplication and the stage sort, so it works on final
+        names in a sensible baseline order. Unknown and self-references are
+        dropped, a plan that declared nothing falls back to the sequential
+        chain every plan had before dependencies existed, and a cycle is
+        broken rather than obeyed. After this, list order and graph order
+        agree: every agent appears after everything it depends on.
+        """
+        sanitise_dependencies(self.agents)
+        wire_sequential_fallback(self.agents)
+        self.agents = list(topological_order(self.agents))
         return self
 
 
@@ -216,9 +274,15 @@ PLANNER_PROMPT = """You are the planner of a multi-agent system.
 You never solve tasks yourself. You decide which specialized agents are needed.
 
 Rules:
+- First grade the task's complexity honestly. 'simple' work gets a fast,
+  cheap run; 'deep' work gets the most careful one. Most tasks are 'standard'.
 - Use the FEWEST agents possible (1 for simple tasks, up to {max_agents} for complex ones).
 - Each agent must have exactly ONE clear responsibility.
-- Agents run in order; each agent receives the outputs of the agents before it.
+- Declare each agent's 'depends_on': the names of the agents whose OUTPUTS it
+  genuinely needs, and only those. Agents whose dependencies are all met run
+  AT THE SAME TIME - so two agents that each work from the task alone should
+  both declare no dependencies, not an invented ordering. An agent that
+  synthesises must depend on every agent it synthesises from.
 - Name each agent in snake_case, e.g. 'research_agent'.
 - Agents can search the web. If the task turns on anything that changed after
   training - prices, news, releases, listings, "current", "latest", "today" -

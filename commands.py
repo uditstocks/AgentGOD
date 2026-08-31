@@ -17,7 +17,8 @@ PREFIX = "/"
 # name -> (argument, one-line description), in the order /help lists them.
 COMMANDS: dict[str, tuple[str, str]] = {
     "help": ("", "this list"),
-    "library": ("", "the agents kept for reuse, and how often each is used"),
+    "library": ("", "the agents kept for reuse, with each one's record"),
+    "stats": ("", "the lifetime dashboard: runs, reuse savings, reliability"),
     "forget": ("<agent>", "drop one agent from the library"),
     "audit": ("", "check the library for agents that hardcoded their first task"),
     "history": ("", "the most recent archived runs"),
@@ -92,8 +93,61 @@ def _library_text() -> str:
     lines = [f"**{len(entries)} agent{'s' if len(entries) != 1 else ''} kept for reuse**", ""]
     for entry in entries:
         uses = f"{entry.uses} use{'s' if entry.uses != 1 else ''}"
-        lines.append(f"    {entry.name:<22} {uses:<10} {entry.role or 'no description recorded'}")
+        record = _record(entry)
+        lines.append(
+            f"    {entry.name:<22} {uses:<9} {record:<14} "
+            f"{entry.role or 'no description recorded'}"
+        )
     lines += ["", f"Drop one with `{PREFIX}forget <name>`."]
+    return "\n".join(lines)
+
+
+def _record(entry) -> str:
+    """One agent's reliability, compact: `3W/1L · gen 2`. Blank while unproven."""
+    parts = []
+    if entry.wins or entry.losses:
+        parts.append(f"{entry.wins}W/{entry.losses}L")
+    if entry.generation > 1:
+        parts.append(f"gen {entry.generation}")
+    return " · ".join(parts)
+
+
+def _stats_text() -> str:
+    """The lifetime dashboard, entirely from disk - nothing here costs a call."""
+    from config import RUNS_DIR
+    from library import catalogue
+
+    entries = catalogue()
+    try:
+        run_count = sum(1 for _ in RUNS_DIR.glob("*.md")) if RUNS_DIR.is_dir() else 0
+    except OSError:
+        run_count = 0
+
+    reuses = sum(entry.uses for entry in entries)
+    evolved = [entry for entry in entries if entry.generation > 1]
+    proven = [entry for entry in entries if entry.wins or entry.losses]
+
+    lines = [
+        "**AgentGod - lifetime stats**",
+        "",
+        f"    runs archived      {run_count}",
+        f"    agents in library  {len(entries)}",
+        f"    free reuses        {reuses}  (each one skipped a full code-generation call)",
+        f"    evolved agents     {len(evolved)}"
+        + (f"  ({', '.join(e.name for e in evolved)})" if evolved else ""),
+    ]
+    if proven:
+        lines += ["", "**Reliability** - wins/losses since each agent was kept or last evolved", ""]
+        ranked = sorted(proven, key=lambda e: (-(e.wins - e.losses), -e.uses, e.name))
+        for entry in ranked:
+            record = _record(entry) or "-"
+            lines.append(f"    {entry.name:<22} {record}")
+    if not entries and not run_count:
+        return (
+            "Nothing to count yet. Run a task, keep an agent, and this "
+            "dashboard starts filling in."
+        )
+    lines += ["", f"`{PREFIX}library` lists every kept agent; `{PREFIX}history` the recent runs."]
     return "\n".join(lines)
 
 
@@ -170,6 +224,8 @@ def handle(command: Command, conversation=None) -> str:
         return help_text()
     if command.name in ("library", "agents", "ls"):
         return _library_text()
+    if command.name in ("stats", "dashboard"):
+        return _stats_text()
     if command.name == "forget":
         return _forget_text(command.argument)
     if command.name == "audit":
