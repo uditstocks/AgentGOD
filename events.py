@@ -54,3 +54,9 @@ class TaskEvents:
 
     def merge_started(self, survivors: int) -> None:
         """The merger began collapsing `survivors` outputs into one answer."""
+
+    def answer_judged(self, done: bool, missing: str) -> None:
+        """The main agent read its own answer back against the request."""
+
+    def revision_started(self, attempt: int, attempts: int, missing: str) -> None:
+        """The answer fell short, so the agents are running again on the gap."""

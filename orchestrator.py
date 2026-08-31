@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from config import AGENT_REPAIR_ATTEMPTS, Usage
+from config import AGENT_REPAIR_ATTEMPTS, TASK_REVISIONS, Usage
 from events import TaskEvents
 from executor import (
     AgentResult,
@@ -24,7 +24,8 @@ from executor import (
     save_agent_file,
 )
 from generator import generate_agent_code
-from library import forget, lookup, record_use, remember, reusable
+from judgment import judge, revision_task
+from library import forget, lookup, record_use, remember, reusable, up_to_date
 from merger import merge_outputs
 from planner import AgentSpec, Plan, canonical_role, plan_agents, upstream_names
 
@@ -34,6 +35,7 @@ PHASES = (
     "Checking dependencies",
     "Executing agents",
     "Merging outputs",
+    "Checking the answer",
 )
 
 
@@ -56,6 +58,8 @@ class TaskResult:
     agent_cost_usd: float = 0.0
     reused: list[str] = field(default_factory=list)
     built: list[str] = field(default_factory=list)
+    # How many times the answer was rejected by the main agent and rebuilt.
+    revisions: int = 0
     pending: dict[str, tuple[str, str]] = field(default_factory=dict)
     dependencies: DependencyReport = field(default_factory=DependencyReport)
     duration_seconds: float = 0.0
@@ -106,6 +110,71 @@ def _run_with_repair(
     return result, repaired
 
 
+def _rerun_agents(
+    plan: Plan,
+    agent_paths: list[Path],
+    task: str,
+    events: TaskEvents,
+) -> tuple[dict[str, str], list[AgentResult]]:
+    """Run every agent again on a revised task, in the same order as before.
+
+    No repair pass here, unlike the first round: these agents have already run
+    once, so a crash now is not the failure mode a revision exists to fix, and
+    regenerating them would throw away the working code that produced the
+    first answer.
+    """
+    outputs: dict[str, str] = {}
+    results: list[AgentResult] = []
+    for index, (spec, path) in enumerate(zip(plan.agents, agent_paths, strict=True)):
+        events.agent_started(spec.name, index + 1, len(plan.agents))
+        result = execute_agent(path, task, outputs)
+        results.append(result)
+        if result.ok:
+            outputs[result.name] = result.output
+        events.agent_finished(result)
+    return outputs, results
+
+
+def _finish_answer(
+    task: str,
+    response: str,
+    plan: Plan,
+    agent_paths: list[Path],
+    usage: Usage,
+    events: TaskEvents,
+) -> tuple[str, list[AgentResult], int]:
+    """Read the answer back against the request, and try again if it falls short.
+
+    This is the only place the system judges its own output. Without it a run
+    ends wherever the merger happened to stop - a 200-word brief answered in
+    600 words was simply delivered, because nothing ever compared the two.
+
+    Bounded by TASK_REVISIONS because each attempt re-runs every agent and is
+    billed like the first one. A revision that produces nothing usable leaves
+    the original answer standing rather than replacing it with worse.
+    """
+    extra_results: list[AgentResult] = []
+    revisions = 0
+    for attempt in range(1, TASK_REVISIONS + 1):
+        verdict = judge(task, response, usage=usage)
+        events.answer_judged(verdict.done, verdict.missing)
+        if verdict.done:
+            break
+
+        events.revision_started(attempt, TASK_REVISIONS, verdict.missing)
+        outputs, results = _rerun_agents(
+            plan, agent_paths, revision_task(task, verdict.missing), events
+        )
+        extra_results.extend(results)
+        if not outputs:
+            break
+        events.merge_started(len(outputs))
+        response = merge_outputs(task, outputs, usage=usage)
+        revisions = attempt
+
+    return response, extra_results, revisions
+
+
 def handle_task(
     task: str,
     on_agent_created: Callable[[Path], None] | None = None,
@@ -147,6 +216,13 @@ def handle_task(
         # one that turned out to have hardcoded the task it was built for,
         # because that agent is wrong for every task except that one.
         code = lookup(spec.name)
+        if code is not None and not up_to_date(spec.name):
+            # Cheapest check first, and the one nothing else can catch: an
+            # agent written against an older runtime runs perfectly and
+            # silently does less than the plan just promised.
+            events.agent_retired(spec.name, "it was built against an older agent runtime")
+            forget(spec.name)
+            code = None
         if code is not None and not reusable(spec.name):
             events.agent_retired(spec.name, "it hardcoded the task it was built for")
             forget(spec.name)
@@ -212,10 +288,17 @@ def handle_task(
     events.merge_started(len(outputs))
     response = merge_outputs(task, outputs, usage=usage)
 
+    events.phase_started(6, len(PHASES), PHASES[5])
+    response, extra_results, revisions = _finish_answer(
+        task, response, plan, agent_paths, usage, events
+    )
+    results.extend(extra_results)
+
     return TaskResult(
         response=response,
         plan=plan,
         task=subject,
+        revisions=revisions,
         reused=reused,
         built=built,
         pending=pending,

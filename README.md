@@ -7,10 +7,10 @@
 ### One agent that writes other agents - runs them, merges their answers, and deletes them.
 
 ![python](https://img.shields.io/badge/python-3.10%2B-334155?style=flat-square&labelColor=0d1117)
-![tests](https://img.shields.io/badge/tests-183%20passed-15803d?style=flat-square&labelColor=0d1117)
+![tests](https://img.shields.io/badge/tests-463%20passed-15803d?style=flat-square&labelColor=0d1117)
 ![ruff](https://img.shields.io/badge/ruff-clean-15803d?style=flat-square&labelColor=0d1117)
 ![pyright](https://img.shields.io/badge/pyright-0%20errors-15803d?style=flat-square&labelColor=0d1117)
-![model](https://img.shields.io/badge/any%20model-OpenRouter-334155?style=flat-square&labelColor=0d1117)
+![model](https://img.shields.io/badge/model-claude--sonnet--5-334155?style=flat-square&labelColor=0d1117)
 
 **[Quickstart](#quickstart)** · **[How it works](#how-it-works)** · **[See it run](#see-it-run)** · **[Safety](#containment)** · **[Config](#calibration)** · **[Architecture](ARCHITECTURE.md)**
 
@@ -44,7 +44,7 @@ cd AgentGOD
 pip install -r requirements.txt
 ```
 
-Get a key from **[openrouter.ai/keys](https://openrouter.ai/keys)**, then:
+Get a key from **[console.anthropic.com](https://console.anthropic.com/settings/keys)**, then:
 
 ```bash
 cp .env.example .env        # Windows:  Copy-Item .env.example .env
@@ -52,7 +52,7 @@ cp .env.example .env        # Windows:  Copy-Item .env.example .env
 
 ```ini
 # .env
-OPENROUTER_API_KEY=sk-or-...
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 ```bash
@@ -75,7 +75,7 @@ and a compact transcript.
 ```
   ────────────────────────────────────────────────────── 22:14 ──
 
-  PLAN  ▸  FORGE  ▸  DEPS  ▸  RUN  ▸  MERGE                00:08
+  PLAN  ▸  FORGE  ▸  DEPS  ▸  RUN  ▸  MERGE  ▸  CHECK      00:08
   ⠸ run  translation_agent is working  (1/2)
 
    ⠼  translation_agent  Translate the phrase into the      3s
@@ -199,6 +199,12 @@ from nothing. It never does the work itself.
    ┌───────────┐
    │   MERGER  │   collapses every voice into one answer
    └─────┬─────┘
+         │  a finished answer
+         ▼
+   ┌───────────┐
+   │ JUDGEMENT │   reads it back against the request  ──┐  short?
+   └─────┬─────┘                                        │  run again
+         │  it holds                        ────────────┘
          ▼
     final response
          │
@@ -209,6 +215,18 @@ from nothing. It never does the work itself.
 Each stage does one thing and knows nothing about the others. The planner has
 never seen a line of Python. The executor has never seen a prompt. A factory
 line, not one mind holding the whole problem at once.
+
+The last stage is the one that makes it an agent rather than a pipeline. A run
+used to end wherever the merger happened to stop; now the answer is read back
+against the request, and a 200-word brief that came out at 600 words sends the
+agents round again with the gap named. Before any of it starts, an ambiguous
+task earns one clarifying question - and only one, and only when there is a
+person there to answer it.
+
+Agents can also **search the web**. That runs server-side at the API, so a
+generated agent stays standard-library-only and gains no new reach of its own:
+it asks a question and reads an answer. What it cannot do is browse - no
+logging in, no clicking through a site, no filling in a form.
 
 ---
 
@@ -222,10 +240,16 @@ wrote?**
   before it goes near the filesystem. `../../../pwned` becomes `pwned`.
 - **Code is not trusted.** Every generated file is parsed and inspected -
   import by import, call by call - before it is allowed to become a process.
-  No `eval`. No `exec`. No shelling out. No writing to disk. Anything outside a
-  vetted set of imports is refused, not warned about.
-- **Dependencies are not trusted.** A package is installed only if it is on an
-  explicit allowlist, and only into an isolated environment - never yours.
+  The whole standard library is available, minus the dozen modules that would
+  undo the rest of this list: `subprocess`, `shutil`, `socket`, `pickle`,
+  `importlib` and their neighbours. No `eval`. No `exec`. No shelling out.
+  No writing to disk.
+- **Dependencies are not trusted.** A package is installed only if it is one of
+  the ~80 vetted names, and only into an isolated environment - never yours.
+  An invented package name is refused rather than installed: a hallucinated
+  name is a supply-chain vector, not a typo to be helpfully resolved. The list
+  lives in `codeguard.ALLOWED_PACKAGES`; add to it and both the installer and
+  the import check follow.
 - **Time is not unlimited.** Every agent runs against a hard deadline. If it
   fails, its own error becomes the instruction for rewriting it.
 
@@ -302,11 +326,11 @@ sequenceDiagram
 No shared memory. No message bus. Nothing travels between agents except what
 the one before it actually returned.
 
-### Standard library only
+### No framework, no install step
 
-Generated agents import nothing. They speak to the model directly over plain
-HTTPS, which is why they start instantly instead of paying a framework import
-on every single run:
+Generated agents import no framework and no SDK. They speak to the Messages
+API directly over plain HTTPS, which is why they start instantly instead of
+paying a framework import on every single run:
 
 ```diff
   COLD START · measured · Python 3.12 · Windows 11
@@ -368,7 +392,7 @@ ranked by how often they have actually been used.
   $ pip install pytest ruff pyright
 
   $ pytest
-+ 183 passed
++ 463 passed
 
   $ ruff check .
 + All checks passed!
@@ -389,15 +413,19 @@ Everything below has a working default. Only the key is required.
 
 | Variable | Default | Governs |
 |---|---|---|
-| `OPENROUTER_API_KEY` | - *(required)* | Access to the model |
-| `MODEL` | `openai/gpt-4o-mini` | Any chat model OpenRouter can reach |
+| `ANTHROPIC_API_KEY` | - *(required)* | Access to the model |
+| `MODEL` | `claude-sonnet-5` | Any Claude model the Messages API serves |
 | `MAX_AGENTS` | `4` | Ceiling on team size |
 | `AGENT_TIMEOUT_SECONDS` | `300` | Hard deadline per running agent |
 | `AGENT_REPAIR_ATTEMPTS` | `2` | Rewrites allowed for a crashing agent |
 | `CODEGEN_ATTEMPTS` | `3` | Rewrites allowed for invalid generated code |
-| `LLM_TIMEOUT_SECONDS` | `60` | Deadline for the architect's own calls |
+| `LLM_TIMEOUT_SECONDS` | `120` | Deadline for the architect's own calls |
+| `LLM_MAX_TOKENS` | `8192` | Ceiling on one reply from the architect |
+| `LLM_EFFORT` | `medium` | How hard the model works: `low` - `max`. Replaces temperature |
 | `LLM_MAX_RETRIES` | `3` | Retries on a transient failure |
 | `MAX_CHARS_PER_INPUT` | `6000` | Cap on text forwarded to the next agent |
+| `TASK_REVISIONS` | `1` | Rebuilds allowed when the answer misses the request. `0` turns self-checking off |
+| `WEB_SEARCH_MAX_USES` | `5` | Searches one agent call may run |
 | `AGENTGOD_PLAIN` | - | Force plain output (same as `--plain`) |
 | `NO_COLOR` | - | Keep the interface, strip the color |
 
@@ -439,8 +467,9 @@ One file, one responsibility. The reasoning behind every decision is in
 This is not pretending to be more than it is.
 
 Agents run in sequence, not in parallel - there is an order here, not yet a
-scheduler. None of them carries a tool, browses the open web, or remembers a
-previous run within a task.
+scheduler. They can look something up, but they cannot browse: no logging in,
+no clicking through a site, no filling in a form. They do not write to your
+files, run your code, or remember a previous run within a task.
 
 What is here is exact. What is not here has not been claimed.
 

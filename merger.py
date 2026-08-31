@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from config import MAX_CHARS_PER_INPUT, Usage, get_llm, response_text
+from config import MAX_CHARS_PER_INPUT, Usage, complete
 
 MERGER_PROMPT = """You are the coordinator of a multi-agent system.
 Several specialized agents each completed one part of the user's task.
@@ -43,8 +43,7 @@ def merge_outputs(task: str, outputs: dict[str, str], usage: Usage | None = None
     if not outputs:
         raise ValueError("no agent produced an output to merge")
 
-    llm = get_llm()
-    response = llm.invoke(MERGER_PROMPT.format(task=task, outputs=_format_outputs(outputs)))
-    if usage is not None:
-        usage.record(response)
-    return response_text(response).strip()
+    return complete(
+        MERGER_PROMPT.format(task=task, outputs=_format_outputs(outputs)),
+        usage=usage,
+    ).strip()

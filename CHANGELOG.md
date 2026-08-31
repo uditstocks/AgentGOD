@@ -1,5 +1,142 @@
 # Changelog
 
+## It looks things up, and it checks its own work - 2026-08-26
+
+Two things AgentGod could not do: find out anything that happened after the
+model's training cutoff, and notice when its own answer did not answer the
+question. Both are now part of the loop.
+
+### Web search
+
+- The agent runtime declares Anthropic's **server-side `web_search` tool**.
+  The search runs on the API's servers, so a generated agent needs no scraper,
+  no second API key, no new dependency and no new hole in `codeguard` - it is
+  still standard library only, still ~0.05 s to start. `call_llm(..., search=True)`
+  is the whole surface.
+- A long search session pauses partway (`stop_reason: "pause_turn"`) and is
+  resumed by handing the paused turn straight back, capped by
+  `MAX_CONTINUATIONS`. `WEB_SEARCH_MAX_USES` is the per-call cost ceiling.
+- **The refusal path is gone.** `Intent.LIVE_DATA`, its regex battery and
+  `describe_live_data_limit` are deleted - roughly sixty lines whose only job
+  was to say "I have no internet access" before the pipeline ever started.
+  Those questions are now work, and the planner is told to give them to an
+  agent that looks them up rather than one that answers from memory.
+
+### Judgement
+
+- New `judgment.py`. Before planning, `clarifying_question` decides whether one
+  question is worth asking; after merging, `judge` reads the answer back
+  against the request and returns either "done" or an instruction the next
+  attempt can act on. A rejection with nothing actionable in it is treated as
+  done, because retrying on it just bills for the same answer twice.
+- A run no longer ends wherever the merger happened to stop. When the answer
+  misses the request the agents run again on `revision_task(task, missing)` -
+  the original wording with the gap appended, never the critique in place of
+  the request. Bounded by `TASK_REVISIONS` (default 1, `0` disables it), and a
+  revision that produces nothing usable leaves the first answer standing.
+- The clarifying question is asked in `main.py`, before the live display goes
+  up and only when stdin is a person: a question nobody can answer is a
+  stalled run, not a careful one.
+
+### The library learned about versions
+
+Found by running the thing rather than by reading it. A research task planned
+correctly, said "searching the web" in its own reasoning, reused
+`research_agent` from the library for free - and answered from memory, because
+that agent was written before `search` existed. It ran perfectly and silently
+did less than the plan promised.
+
+- `config.AGENT_RUNTIME_VERSION` is stamped onto every agent as it is
+  remembered, and `library.up_to_date()` is the second promise the library
+  makes, alongside `reusable()`. An agent from an older runtime is retired and
+  rewritten instead of handed back.
+- Every agent already on disk carries `runtime: 0` and is rebuilt on first use.
+
+### Proof
+
+- 23 new tests: the verdict rules and the revised task's shape, the clarifying
+  question's silence cases, the search tool's wire shape (declared only when
+  asked for, `max_uses` present, a paused turn resumed with no "continue"
+  message, a bounded continuation loop, search results never mistaken for the
+  answer), and the runtime-version retirement.
+- 463 total, still no API key or network needed.
+
+## Claude, directly - 2026-08-26
+
+OpenRouter is gone. Both halves of the system now talk to the Anthropic
+Messages API, and the default model is `claude-sonnet-5`.
+
+### The main agent
+
+- `config.py` drops LangChain and OpenRouter for the official `anthropic` SDK.
+  `get_llm()` is replaced by `get_client()` plus two call sites - `complete()`
+  for text and `complete_structured()` for a schema-constrained reply - so the
+  planner no longer routes structured output through a framework adapter.
+- `plan_agents()` uses `output_format=Plan`: the API enforces the schema, so a
+  malformed plan is a request error instead of something to salvage.
+- **`temperature` is gone.** Current models reject it. `LLM_EFFORT`
+  (`low` - `max`, default `medium`) is the knob that replaced it, and
+  `LLM_TIMEOUT_SECONDS` rises to 120s because the model reasons before it
+  answers.
+- Two dependencies removed (`langchain-openai`, `langchain-core`), one added.
+
+### Generated agents
+
+- The trusted runtime POSTs to `/v1/messages` with `x-api-key` and
+  `anthropic-version` - still standard library only, still no SDK import, still
+  ~0.05 s to start.
+- It returns the reply's **text** blocks. A reasoning model puts a thinking
+  block first, and returning that instead of the answer would be a silent
+  whole-run failure.
+- `call_llm(..., temperature=...)` is still accepted and now ignored, so the
+  four agents already in the library kept working across the switch. All four
+  were re-emitted on the new runtime.
+- Token usage on stderr is now `input_tokens` / `output_tokens`, and the
+  per-agent cost is priced locally from `config.PRICING_PER_MTOK`: the API
+  bills tokens and says nothing about money.
+
+### What an agent is allowed to import
+
+The curated import allowlist was refusing ordinary work. A task that needed a
+QR code was refused for `qrcode`; one that needed a CSV was refused for `csv`,
+which is in the standard library and was simply absent from a hand-written set
+of twenty-four names.
+
+- **The standard library is now allowed wholesale**, minus `BLOCKED_STDLIB` -
+  the dozen modules that would undo a check `codeguard` already makes
+  elsewhere in the same file (`subprocess`, `multiprocessing`, `ctypes`, `pty`,
+  `socket` for shelling out; `importlib`, `runpy`, `pickle`, `marshal` for
+  running code chosen at runtime; `shutil` for the filesystem). 199 modules
+  available, up from 24. Banning `subprocess` while banning `eval()` is one
+  rule, not two.
+- **The vetted package list grew from 9 names to 81**, covering web, data,
+  documents, images, dates, validation, crypto and databases.
+- `ALLOWED_PACKAGES` moved into `codeguard.py` and is now the **single source
+  of truth**: `executor.py` installs from it, and the import check derives from
+  it. A package that installs but may not be imported can no longer exist.
+- **The planner is shown the list.** The refusal was never really an allowlist
+  problem - the model named a package it could not see and had therefore
+  guessed. The planner prompt now carries all 81 names, and the generator
+  prompt tells each agent exactly which of them were installed *for it*.
+- The refusal message says why (`shells out`, `not a vetted package`) instead
+  of reciting the allowlist, which is now three hundred names and would be
+  three hundred names of noise in a repair prompt.
+
+An invented package name is still refused rather than installed. That guard is
+the point: a hallucinated name is a supply-chain vector, not a typo to be
+helpfully resolved.
+
+### Proof
+
+- 4 new tests exec the trusted runtime with the network stubbed and assert the
+  wire shape: auth headers, the required `max_tokens`, no `temperature` on the
+  request, thinking blocks skipped, usage line on stderr.
+- 13 more cover the allowlist change: ordinary stdlib admitted, blocked stdlib
+  still refused, every vetted package importable under its import name, the
+  planner prompt carrying every name, and an agent never being offered a
+  package that was not installed for it.
+- 440 total, still no API key or network needed.
+
 ## The interface - 2026-08-25
 
 The pipeline is unchanged; how it *feels* is not. The terminal experience is

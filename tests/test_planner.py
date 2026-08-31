@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+import planner
+from codeguard import ALLOWED_PACKAGES
 from config import MAX_AGENTS
 from planner import AgentSpec, Plan, safe_agent_name, upstream_names
 
@@ -180,3 +182,25 @@ def test_upstream_names_are_the_preceding_agents():
     assert upstream_names(agents, 0) == []
     assert upstream_names(agents, 1) == ["a_agent"]
     assert upstream_names(agents, 2) == ["a_agent", "b_agent"]
+
+
+# --- the planner is shown the packages it may ask for --------------------------
+
+
+def test_the_prompt_lists_every_vetted_package():
+    """A name it cannot see is a name it invents, and an invented name is refused."""
+    rendered = planner.PLANNER_PROMPT.format(
+        task="t",
+        max_agents=4,
+        library="",
+        standard="",
+        packages=planner._wrap("  ", sorted(ALLOWED_PACKAGES)),
+    )
+    for name in ALLOWED_PACKAGES:
+        assert name in rendered
+
+
+def test_the_package_list_wraps_instead_of_running_off_the_line():
+    lines = planner._wrap("  ", sorted(ALLOWED_PACKAGES)).splitlines()
+    assert len(lines) > 1
+    assert all(line.startswith("  ") and len(line) <= 78 for line in lines)

@@ -147,11 +147,21 @@ def _docstring_ids(tree: ast.Module) -> set[int]:
 
 # The trusted runtime that generator.py wraps around every agent. No model
 # wrote it, it is identical in every file, and it is full of words like
-# "OpenRouter" and "usage" that belong to the plumbing rather than to any
+# "system" and "usage" that belong to the plumbing rather than to any
 # task. Checking it produced a page of false accusations the first time a
 # task mentioned one of them.
 RUNTIME_HELPERS = frozenset(
-    {"api_key", "call_llm", "format_previous", "upstream", "chunk", "constraints", "word_count"}
+    {
+        "api_key",
+        "_post",
+        "answer_text",
+        "call_llm",
+        "format_previous",
+        "upstream",
+        "chunk",
+        "constraints",
+        "word_count",
+    }
 )
 
 

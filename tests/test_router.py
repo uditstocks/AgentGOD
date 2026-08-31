@@ -100,8 +100,10 @@ def test_help_questions(text):
         "what is todays date",
     ],
 )
-def test_requests_for_live_readings(text):
-    assert classify(text) is Intent.LIVE_DATA
+def test_requests_for_live_readings_are_work_not_refusals(text):
+    """These used to be short-circuited with 'I have no internet'. Now an
+    agent can look them up, so they belong in the pipeline like any task."""
+    assert classify(text) is Intent.TASK
 
 
 # --- real work must survive every rule above -----------------------------------

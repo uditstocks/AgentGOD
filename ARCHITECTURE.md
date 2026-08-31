@@ -14,6 +14,7 @@ task itself. Its only job is to **engineer other agents**:
 - write their Python code,
 - run them,
 - combine their results,
+- read the answer back against the request, and try again if it falls short,
 - then delete or archive them.
 
 Think of it as a *factory*, not a *worker*. Generated agents are disposable,
@@ -35,14 +36,14 @@ single-purpose programs that exist only for the lifetime of one task
                     ┌─────────────────┐
                     │ orchestrator.py │  THE permanent Main Agent
                     └────────┬────────┘
-       ┌──────────┬──────────┼──────────┬─────────────┐
-       ▼          ▼          ▼          ▼             ▼
-  planner.py  generator.py  executor.py  merger.py  inventory.py
-  (1 LLM call) (1+ calls     (0 LLM calls, (1 LLM call) (0 LLM calls,
-   task →       per agent,    subprocess    outputs →    file ops)
-   Plan)        spec →        per agent)    final
-                .py file)                   answer
-                    │
+       ┌──────────┬──────────┼──────────┬────────────┬────────────┐
+       ▼          ▼          ▼          ▼            ▼            ▼
+  planner.py  generator.py executor.py  merger.py  judgment.py inventory.py
+  (1 LLM call) (1+ calls    (0 LLM calls,(1 LLM call)(1 LLM call,(0 LLM calls,
+   task →       per agent,   subprocess   outputs →   + a rerun   file ops)
+   Plan)        spec →       per agent)   final       if the
+                .py file)                 answer      answer is
+                    │                                 short)
                     ▼
               codeguard.py   (0 LLM calls - validates generated code)
 ```
@@ -58,6 +59,7 @@ Numbered lifecycle for one task:
 | 4 | `executor.py` | Install vetted pip packages into an isolated venv | ❌ |
 | 5 | `executor.py` | Run each agent as a subprocess, in order | ❌ (the *agents* call the LLM) |
 | 6 | `merger.py` | All outputs → one final response | ✅ always |
+| 6b | `judgment.py` | Answer checked against the request; agents rerun if short | ✅ one call, plus a full round per revision |
 | 7 | `library.py` | Remember each new agent for future tasks | ❌ |
 | 8 | `runlog.py` | Archive the answer to `runs/` | ❌ |
 | 9 | `inventory.py` | Clear the scratch copies | ❌ |
@@ -70,22 +72,24 @@ One module = one responsibility. If you're adding code and can't decide where
 it goes, that usually means it deserves a new module.
 
 ### `config.py` - shared setup
-- Loads `.env`, then owns the model name, the OpenRouter URLs, the directories,
-  and every tunable limit (agent timeout, retry counts, plan size).
-- `get_llm()` is the **only** place an LLM client is constructed for the main
-  agent. `temperature` defaults to `0`: planning and code generation are
-  structural decisions and must be reproducible run to run.
-- `response_text()` normalises a reply to `str`. langchain-core 1.x may return
-  either a string or a list of content blocks, so **never touch `.content`
-  directly**.
+- Loads `.env`, then owns the model name, the Anthropic endpoint, the
+  directories, and every tunable limit (agent timeout, retry counts, plan size).
+- `get_client()` is the **only** place an SDK client is constructed for the main
+  agent, and `complete()` / `complete_structured()` are the only two ways to
+  reach the model. There is no temperature: current models reject it, so
+  `LLM_EFFORT` (`low` - `max`) is what paces a call instead.
+- `response_text()` normalises a reply to `str`. A reply is a list of content
+  blocks and on a reasoning model the first one is the thinking, not the
+  answer, so **never touch `.content[0]` directly**.
 - `Usage` accumulates tokens and estimates cost.
 
 ### `planner.py` - task analysis
 - Defines the two Pydantic models that are the system's most important data
   structures (see §4).
-- `plan_agents(task)` makes one LLM call with
-  `llm.with_structured_output(Plan, include_raw=True)`. `include_raw` keeps the
-  underlying message reachable so the planning call's tokens are accounted for.
+- `plan_agents(task)` makes one call through `complete_structured(...)`, which
+  constrains the reply to the `Plan` schema with `output_format`. The shape is
+  enforced by the API, so a malformed plan is a request error rather than
+  something to salvage afterwards.
 - **The plan is a trust boundary.** An `AgentSpec.name` becomes a filename and a
   dict key, so it is sanitised to a safe snake_case identifier
   (`"../../../pwned"` → `"pwned"`), Windows device names are avoided, duplicates
@@ -93,7 +97,7 @@ it goes, that usually means it deserves a new module.
   requested in the prompt.
 
 ### `generator.py` - code generation
-- `AGENT_HEADER` is a **fixed, trusted runtime** - imports, the OpenRouter call,
+- `AGENT_HEADER` is a **fixed, trusted runtime** - imports, the Messages API call,
   the stdin/stdout contract. The LLM never writes it, so it cannot drift.
 - The LLM writes only `run()` (plus small helpers). `assemble_agent()` splices
   that into the header. This is why generated agents are *always* structurally
@@ -108,6 +112,14 @@ it goes, that usually means it deserves a new module.
 - `ast.parse` the source; confirm `run(task, previous_outputs)` exists with the
   right arity and is not async.
 - Imports are an **allowlist**, not a denylist - an unknown module is refused.
+  The standard library is allowed wholesale minus `BLOCKED_STDLIB`, the dozen
+  modules that would undo a check made elsewhere in the same file (`subprocess`
+  and friends for shelling out, `importlib`/`pickle` for running code chosen at
+  runtime, `shutil` for the filesystem). A curated subset was the wrong shape:
+  it refused `csv`, `sqlite3` and `zipfile` for no reason but absence.
+- `ALLOWED_PACKAGES` (pip name → import name) is the **single source of truth**
+  for third-party code. `executor.py` installs from it and the import check
+  derives from it, so an installable-but-unimportable package cannot exist.
 - Refuses `eval`/`exec`/`compile`/`__import__`, process and filesystem-mutating
   attribute calls (`os.system`, `os.remove`, …), and `open()` in any write mode.
 - Fully unit-testable without an API key.
@@ -115,11 +127,11 @@ it goes, that usually means it deserves a new module.
 ### `executor.py` - filesystem + processes (no AI here)
 - `save_agent_file` - writes `generated_agents/<name>.py`, asserting the
   resolved path is still inside that directory.
-- `install_dependencies` - only packages in `ALLOWED_PACKAGES` are installed,
-  and they go into an isolated venv (`.agent_venv/`), never the interpreter
-  running this program. Anything else is refused and reported. Installed
-  *distributions* are probed via `importlib.metadata`, because pip names and
-  import names differ (`beautifulsoup4` → `bs4`).
+- `install_dependencies` - only packages in `codeguard.ALLOWED_PACKAGES` are
+  installed, and they go into an isolated venv (`.agent_venv/`), never the
+  interpreter running this program. Anything else is refused and reported.
+  Installed *distributions* are probed via `importlib.metadata`, because pip
+  names and import names differ (`beautifulsoup4` → `bs4`).
 - `execute_agent` - runs ONE agent via `subprocess.run`, feeding JSON on stdin.
   **UTF-8 is forced in both directions** (`PYTHONUTF8`/`PYTHONIOENCODING` in the
   child, `errors="replace"` in the parent); without it a piped child on Windows
@@ -128,6 +140,19 @@ it goes, that usually means it deserves a new module.
   exception.
 - `execute_all` - the pipeline loop: agent N gets the outputs of agents 1..N-1.
   **Only successful outputs are forwarded.**
+
+### `judgment.py` - the main agent judging itself
+- `clarifying_question(task)` - the one question worth asking before anything is
+  spent, or None. Called from `main.py` before the live display goes up, and
+  only when stdin is a person: a question nobody can answer is a stalled run,
+  not a careful one. Biased hard toward silence - an agent that asks about
+  every task is worse than one that never asks.
+- `judge(task, answer)` - a `Verdict` of `done` plus, when it is not, `missing`:
+  an instruction the next attempt can act on. `missing` is declared before
+  `done` so the model examines the answer before it rules on it.
+- `revision_task(task, missing)` - the original wording with the gap appended.
+  Replacing the task with the critique is how a second attempt drifts onto the
+  complaint instead of onto what the user actually asked for.
 
 ### `merger.py` - synthesis
 - One LLM call that receives the task + all labelled outputs and writes the
@@ -190,7 +215,7 @@ it goes, that usually means it deserves a new module.
   (model name, limits, results) arrives as an argument or through an event.
 
 ### `main.py` - the conversation
-- Validates `OPENROUTER_API_KEY`, loops on the task prompt, hands each run's
+- Validates `ANTHROPIC_API_KEY`, loops on the task prompt, hands each run's
   events to the active UI, then asks *keep or discard?*.
 - One failed task must not end the session: `handle_task` is wrapped, and
   cleanup runs in a `finally` so a mid-run failure still offers to remove the
@@ -251,10 +276,10 @@ pure ASCII on the wire and cannot be mangled by the child's encoding.
 
 Structurally, every generated file is `AGENT_HEADER` + the model's `run()` +
 `AGENT_FOOTER`. The header is **standard library only** (`json`, `os`, `sys`,
-`time`, `urllib`, `pathlib`) and talks to OpenRouter over plain HTTPS. Two
-consequences worth knowing:
+`time`, `urllib`, `pathlib`) and POSTs to the Messages API over plain HTTPS -
+it does not even import the Anthropic SDK. Two consequences worth knowing:
 
-- **Startup is ~0.05 s, not ~6 s.** Importing LangChain inside every agent
+- **Startup is ~0.05 s, not ~6 s.** Importing a framework inside every agent
   subprocess used to dominate wall-clock time.
 - **An archived agent runs on its own.** `api_key()` falls back to a `.env` file
   up the directory tree, so an agent in `inventory/` works with nothing
@@ -350,8 +375,9 @@ Conventions to keep while contributing:
 
 1. **Agent name == filename == `previous_outputs` key.** Sanitise it in
    `planner.safe_agent_name`, nowhere else.
-2. **`config.get_llm()` is the single LLM factory.** Never construct
-   `ChatOpenAI` anywhere else in the main codebase.
+2. **`config.complete()` and `config.complete_structured()` are the only two
+   ways to reach the model.** Never construct an `anthropic.Anthropic` client
+   anywhere else in the main codebase.
 3. **Executor and codeguard stay AI-free.** They deal in files, processes,
    strings and syntax trees only. That separation is what makes the test suite
    runnable without an API key.
@@ -379,7 +405,7 @@ Generated code is executed on your machine. The defences, in order:
 
 What this does **not** do: it is static validation, not a sandbox. A determined
 prompt-injection payload that stays within the allowlist can still make network
-calls (agents need HTTPS to reach OpenRouter). **Treat the task string as a
+calls (agents need HTTPS to reach the API). **Treat the task string as a
 trust boundary** - the roadmap's Docker-per-agent item is the real fix.
 
 ---

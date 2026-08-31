@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
+import textwrap
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from config import MAX_AGENTS, Usage, get_llm
+from codeguard import ALLOWED_PACKAGES
+from config import MAX_AGENTS, Usage, complete_structured
 
 # An agent name becomes a filename and a dict key, so it must be a plain
 # snake_case identifier. Anything else is a path-traversal risk.
@@ -50,8 +52,9 @@ class AgentSpec(BaseModel):
     )
     dependencies: list[str] = Field(
         default_factory=list,
-        description="Extra pip packages this agent needs (usually none; the agent "
-        "runtime is standard library only)",
+        description="Extra pip packages this agent needs (usually none - the whole "
+        "Python standard library is already available). Any name outside the vetted "
+        "list in the prompt is refused, so never invent one.",
     )
 
     @field_validator("name")
@@ -188,6 +191,17 @@ def stage_rank(name: str, role: str = "") -> int:
     return PRODUCE_RANK
 
 
+def _wrap(indent: str, names: list[str], width: int = 78) -> str:
+    """Lay a long list of names out over several indented lines.
+
+    Eighty package names on one line is a wall the model skims past; wrapped,
+    it reads them, which is the whole point of showing the list at all.
+    """
+    return textwrap.fill(
+        ", ".join(names), width=width, initial_indent=indent, subsequent_indent=indent
+    )
+
+
 def canonical_role(name: str, fallback: str = "") -> str:
     """The reusable description of a standard agent, for the library index.
 
@@ -206,8 +220,16 @@ Rules:
 - Each agent must have exactly ONE clear responsibility.
 - Agents run in order; each agent receives the outputs of the agents before it.
 - Name each agent in snake_case, e.g. 'research_agent'.
-- Generated agents run on the Python standard library and need no pip packages.
-  Leave 'dependencies' empty unless a package is genuinely unavoidable.
+- Agents can search the web. If the task turns on anything that changed after
+  training - prices, news, releases, listings, "current", "latest", "today" -
+  give an agent the job of looking it up and say so in its instructions. Do
+  not refuse the task and do not let an agent answer from memory instead.
+- Generated agents get the whole Python standard library, which covers most
+  work. Leave 'dependencies' empty unless a package is genuinely unavoidable.
+- If one is unavoidable, it must be named EXACTLY from this list. Any other
+  name is refused, so never invent one - if what you want is not here, plan
+  the agent around the standard library instead:
+{packages}
 - Your 'reasoning' must describe exactly the agents you listed - no more, no fewer.
 
 REUSE COMES FIRST. Agents are written once and kept. An agent whose name already
@@ -230,13 +252,12 @@ User task:
 def plan_agents(task: str, usage: Usage | None = None) -> Plan:
     """Ask the main LLM to break the task into a team of agent specs.
 
-    include_raw keeps the underlying message reachable, so the planning call's
-    token usage is accounted for like every other call.
+    The reply is constrained to the Plan schema by the API itself, so a
+    malformed plan is a request error rather than something to salvage here.
     """
     from library import describe_for_planner
 
-    llm = get_llm().with_structured_output(Plan, include_raw=True)
-    result = llm.invoke(
+    return complete_structured(
         PLANNER_PROMPT.format(
             task=task,
             max_agents=MAX_AGENTS,
@@ -244,19 +265,11 @@ def plan_agents(task: str, usage: Usage | None = None) -> Plan:
             standard="\n".join(
                 f"  - {name} - {role}" for name, role in STANDARD_AGENTS.items()
             ),
-        )
+            packages=_wrap("  ", sorted(ALLOWED_PACKAGES)),
+        ),
+        Plan,
+        usage=usage,
     )
-
-    if isinstance(result, dict):
-        if usage is not None and result.get("raw") is not None:
-            usage.record(result["raw"])
-        if result.get("parsing_error"):
-            raise ValueError(f"planner returned an invalid plan: {result['parsing_error']}")
-        result = result.get("parsed")
-
-    if isinstance(result, Plan):
-        return result
-    return Plan.model_validate(result)
 
 
 def upstream_names(agents: list[AgentSpec], index: int) -> list[str]:

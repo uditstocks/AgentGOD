@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from config import INVENTORY_DIR
+from config import AGENT_RUNTIME_VERSION, INVENTORY_DIR
 
 LIBRARY_DIR = INVENTORY_DIR / "agents"
 INDEX_PATH = INVENTORY_DIR / "index.json"
@@ -40,6 +40,10 @@ class LibraryEntry:
     # is wrong for every task after it, and the only way to notice is to
     # remember what it was originally built to do.
     built_for: str = ""
+    # Which version of the trusted agent runtime this agent was written
+    # against. 0 means it predates the stamp, which is treated as too old:
+    # an agent cannot call a helper that did not exist when it was written.
+    runtime: int = 0
 
     @property
     def path(self) -> Path:
@@ -52,6 +56,7 @@ class LibraryEntry:
             "created": self.created,
             "last_used": self.last_used,
             "built_for": self.built_for,
+            "runtime": self.runtime,
         }
 
 
@@ -86,6 +91,7 @@ def _read_index() -> dict[str, LibraryEntry]:
             created=str(record.get("created", "")),
             last_used=str(record.get("last_used", "")),
             built_for=str(record.get("built_for", "")),
+            runtime=int(record.get("runtime", 0) or 0),
         )
     return entries
 
@@ -147,6 +153,19 @@ def reusable(name: str) -> bool:
     return is_reusable(source, entry.built_for)
 
 
+def up_to_date(name: str) -> bool:
+    """Whether the stored agent can still do everything the planner may ask of it.
+
+    The second promise the library makes, alongside `reusable`. When the
+    trusted runtime gains a capability, every agent already on disk was
+    written without it - and nothing in the code or the plan reveals that.
+    A research agent built before web search existed answers from memory and
+    looks like it worked, which is the worst way for this to fail.
+    """
+    entry = entry_for(name)
+    return entry is not None and entry.runtime >= AGENT_RUNTIME_VERSION
+
+
 def audit() -> dict[str, list[str]]:
     """Every library agent that hardcoded the task it was built for.
 
@@ -184,6 +203,7 @@ def remember(name: str, role: str, source: str, task: str = "") -> bool:
     entry.role = role or entry.role
     entry.created = entry.created or _now()
     entry.built_for = task.strip() or entry.built_for
+    entry.runtime = AGENT_RUNTIME_VERSION
     entries[name] = entry
     _write_index(entries)
     return True

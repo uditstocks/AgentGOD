@@ -11,10 +11,24 @@ from config import MAX_CHARS_PER_INPUT, Usage, response_text
 # --- M10: an LLM reply may be a string or a list of content blocks --------------
 
 
+class _Block:
+    """A content block as the SDK returns it: an object, not a dict."""
+
+    def __init__(self, type, text=""):
+        self.type = type
+        self.text = text
+
+
+class _Usage:
+    def __init__(self, input_tokens=0, output_tokens=0):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
 class _Message:
-    def __init__(self, content, usage_metadata=None):
+    def __init__(self, content, usage=None):
         self.content = content
-        self.usage_metadata = usage_metadata
+        self.usage = usage
 
 
 @pytest.mark.parametrize(
@@ -31,12 +45,14 @@ def test_response_text_normalises_content(content, expected):
     assert response_text(_Message(content)) == expected
 
 
-def test_response_text_prefers_the_text_accessor():
-    from langchain_core.messages import AIMessage
+def test_response_text_reads_sdk_content_blocks():
+    assert response_text(_Message([_Block("text", "hello")])) == "hello"
 
-    assert response_text(AIMessage(content="hello")) == "hello"
-    blocks = AIMessage(content=[{"type": "text", "text": "a"}, {"type": "text", "text": "b"}])
-    assert response_text(blocks) == "ab"
+
+def test_response_text_skips_the_thinking_block():
+    """The answer is the text blocks. Returning content[0] returns the reasoning."""
+    reply = _Message([_Block("thinking", "let me see"), _Block("text", "the answer")])
+    assert response_text(reply) == "the answer"
 
 
 # --- M8: usage accounting -------------------------------------------------------
@@ -51,7 +67,7 @@ def test_usage_accumulates():
 
 def test_usage_records_from_a_response():
     usage = Usage()
-    usage.record(_Message("x", {"input_tokens": 7, "output_tokens": 3}))
+    usage.record(_Message("x", _Usage(input_tokens=7, output_tokens=3)))
     assert (usage.input_tokens, usage.output_tokens) == (7, 3)
 
 

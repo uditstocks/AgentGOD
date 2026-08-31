@@ -179,8 +179,8 @@ def test_plain_failure_and_cancellation(capsys):
 
 def test_plain_banner_covers_the_empty_state(capsys):
     surface = PlainUI()
-    surface.banner("openai/gpt-4o-mini", 4, 0, 0)
-    surface.banner("openai/gpt-4o-mini", 4, 7, 12)
+    surface.banner("claude-sonnet-5", 4, 0, 0)
+    surface.banner("claude-sonnet-5", 4, 7, 12)
     out = capsys.readouterr().out
     assert "library empty" in out
     assert "runs none yet" in out
@@ -243,10 +243,10 @@ def test_rich_events_degrade_when_no_run_was_started(rich_surface, capsys):
 def test_rich_banner_and_help_render(rich_surface, monkeypatch):
     surface, buffer = rich_surface
     monkeypatch.setattr(surface, "_beat", lambda: None)
-    surface.banner("openai/gpt-4o-mini", 4, 0, 0)
+    surface.banner("claude-sonnet-5", 4, 0, 0)
     surface.help()
     out = buffer.getvalue()
-    assert "openai/gpt-4o-mini" in out
+    assert "claude-sonnet-5" in out
     assert "--task" in out
 
 

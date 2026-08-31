@@ -29,8 +29,7 @@ TASK_PROMPT = "What do you need done?\n> "
 # import name -> pip name, for the one message that has to be right.
 # `rich` is deliberately absent: the interface degrades without it.
 REQUIREMENTS = {
-    "langchain_openai": "langchain-openai",
-    "langchain_core": "langchain-core",
+    "anthropic": "anthropic",
     "pydantic": "pydantic",
     "dotenv": "python-dotenv",
 }
@@ -156,9 +155,9 @@ def _check_dependencies() -> bool:
     return True
 
 
-def _looks_like_openrouter_key(value: str) -> bool:
+def _looks_like_anthropic_key(value: str) -> bool:
     """A cheap shape check before anything is ever written to .env."""
-    return value.startswith("sk-or-") and len(value) >= 24
+    return value.startswith("sk-ant-") and len(value) >= 24
 
 
 def _check_api_key() -> bool:
@@ -173,26 +172,26 @@ def _check_api_key() -> bool:
     env_file = PROJECT_DIR / ".env"
     load_dotenv(env_file)
 
-    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    if key and not key.startswith("sk-or-..."):
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if key and not key.startswith("sk-ant-..."):
         return True
 
-    _ui().warn("No OPENROUTER_API_KEY found.")
-    _ui().note("Get one at https://openrouter.ai/keys\n")
+    _ui().warn("No ANTHROPIC_API_KEY found.")
+    _ui().note("Get one at https://console.anthropic.com/settings/keys\n")
 
     if not sys.stdin.isatty():
         _ui().note("Set it in .env, or as an environment variable:")
-        _ui().note("  OPENROUTER_API_KEY=sk-or-...")
+        _ui().note("  ANTHROPIC_API_KEY=sk-ant-...")
         return False
 
     entered = ask("Paste your key here (or press Enter to exit): ")
     if not entered:
         _ui().note("\nSet it in .env, or as an environment variable:")
-        _ui().note("  OPENROUTER_API_KEY=sk-or-...")
+        _ui().note("  ANTHROPIC_API_KEY=sk-ant-...")
         return False
 
-    if not _looks_like_openrouter_key(entered):
-        _ui().warn("That does not look like an OpenRouter key (sk-or-...). Nothing was saved.")
+    if not _looks_like_anthropic_key(entered):
+        _ui().warn("That does not look like an Anthropic key (sk-ant-...). Nothing was saved.")
         return False
 
     # Write it back so this only ever happens once.
@@ -202,15 +201,15 @@ def _check_api_key() -> bool:
             lines = [
                 line
                 for line in env_file.read_text(encoding="utf-8").splitlines()
-                if not line.strip().startswith("OPENROUTER_API_KEY=")
+                if not line.strip().startswith("ANTHROPIC_API_KEY=")
             ]
-        lines.append(f"OPENROUTER_API_KEY={entered}")
+        lines.append(f"ANTHROPIC_API_KEY={entered}")
         env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
         _ui().success(f"Saved to {env_file.name} (gitignored).\n")
     except OSError as error:
         _ui().warn(f"Could not write .env ({error}); using the key for this session only.\n")
 
-    os.environ["OPENROUTER_API_KEY"] = entered
+    os.environ["ANTHROPIC_API_KEY"] = entered
     return True
 
 
@@ -335,8 +334,6 @@ def answer_directly(text: str) -> str | None:
         return identity.describe_capabilities()
     if intent is Intent.IDENTITY:
         return identity.describe_identity()
-    if intent is Intent.LIVE_DATA:
-        return identity.describe_live_data_limit(text)
     if intent is Intent.HELP:
         from commands import help_text
 
@@ -366,6 +363,37 @@ def prepare(task: str, conversation=None) -> tuple[str, list[str], str]:
     return prepared, labels, carried
 
 
+def clarify(task: str):
+    """Ask the one question worth asking before the pipeline starts.
+
+    Returns the task to run and what the asking cost. Skipped entirely when
+    stdin is not a person: a question nobody can answer is a stalled run, not
+    a careful one. An empty reply means "just get on with it", which is a
+    perfectly good answer and is not asked about twice.
+    """
+    from config import Usage
+
+    usage = Usage()
+    if not sys.stdin.isatty():
+        return task, usage
+
+    from judgment import clarifying_question
+
+    try:
+        question = clarifying_question(task, usage=usage)
+    except Exception:
+        # Never let the optional question be the thing that kills a run.
+        return task, usage
+    if not question:
+        return task, usage
+
+    _ui().note(f"\nBefore I start - {question}")
+    answer = ask("> ")
+    if not answer:
+        return task, usage
+    return f"{task}\n\n({question} {answer})", usage
+
+
 def run_task(task: str, echo_task: bool = False, conversation=None) -> bool:
     """Run one task end to end. Returns False only if the task itself failed.
 
@@ -381,6 +409,10 @@ def run_task(task: str, echo_task: bool = False, conversation=None) -> bool:
         ui.run_started(task, echo=echo_task)
         ui.reply(reply)
         return True
+
+    # Asked before the live display goes up, and before anything is built:
+    # a question is only worth asking while it can still change the plan.
+    task, clarify_usage = clarify(task)
 
     agent_paths: list[Path] = []
     ok = False
@@ -398,6 +430,7 @@ def run_task(task: str, echo_task: bool = False, conversation=None) -> bool:
         result = handle_task(
             prepared, on_agent_created=agent_paths.append, events=ui, subject=task
         )
+        result.usage.merge(clarify_usage)
         # The archive records what the user asked, not the expanded form the
         # pipeline was given - the expansion is plumbing, not the request.
         report(task, result)

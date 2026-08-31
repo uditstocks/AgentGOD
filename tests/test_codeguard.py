@@ -159,3 +159,43 @@ def test_the_same_names_are_refused_on_a_filesystem_receiver(line):
 )
 def test_names_that_are_only_ever_filesystem_calls_stay_banned_outright(line):
     assert _probe(line)
+
+
+def test_the_installer_and_the_import_check_share_one_list():
+    """A package that installs but cannot be imported fails after the install."""
+    import codeguard
+    import executor
+
+    assert executor.ALLOWED_PACKAGES is codeguard.ALLOWED_PACKAGES
+    assert set(codeguard.ALLOWED_PACKAGES.values()) == set(codeguard.ALLOWED_THIRD_PARTY)
+
+
+# --- the standard library is allowed wholesale, minus a named few ---------------
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["csv", "sqlite3", "hashlib", "zipfile", "difflib", "argparse", "asyncio", "secrets"],
+)
+def test_ordinary_stdlib_is_allowed(module):
+    """These were refused for no reason but absence from a curated list."""
+    assert check_agent_source(f"import {module}\n{VALID}") == []
+
+
+def test_a_package_nobody_vetted_is_still_refused():
+    problems = check_agent_source(f"import leftpad\n{VALID}")
+    assert any("not allowed" in problem for problem in problems)
+
+
+def test_every_vetted_package_is_importable_by_its_import_name():
+    from codeguard import ALLOWED_PACKAGES
+
+    for pip_name, import_name in ALLOWED_PACKAGES.items():
+        assert check_agent_source(f"import {import_name}\n{VALID}") == [], pip_name
+
+
+def test_the_refusal_says_why_without_reciting_the_allowlist():
+    """The message goes into a repair prompt; the standard library is 300 names."""
+    problem = check_agent_source(f"import subprocess\n{VALID}")[0]
+    assert "shells out" in problem
+    assert len(problem) < 200

@@ -13,6 +13,7 @@ import pytest
 import orchestrator
 from events import TaskEvents
 from executor import AgentResult, DependencyReport
+from judgment import Verdict
 from planner import AgentSpec, Plan, canonical_role
 
 SOURCE = "def run(task, previous_outputs):\n    return 'ok'\n"
@@ -57,6 +58,12 @@ class Recorder(TaskEvents):
     def merge_started(self, survivors):
         self.log.append(("merge", survivors))
 
+    def answer_judged(self, done, missing):
+        self.log.append(("judged", done))
+
+    def revision_started(self, attempt, attempts, missing):
+        self.log.append(("revision", attempt))
+
     def kinds(self) -> list[str]:
         return [entry[0] for entry in self.log]
 
@@ -98,6 +105,8 @@ def collaborators(monkeypatch, tmp_path):
     # A library agent is only handed back if it still checks out; these
     # tests are about sequencing, so the check always passes here.
     monkeypatch.setattr(orchestrator, "reusable", lambda name: True)
+    # Likewise: a stale-runtime retirement has its own test below.
+    monkeypatch.setattr(orchestrator, "up_to_date", lambda name: True)
     monkeypatch.setattr(orchestrator, "forget", lambda name: True)
     monkeypatch.setattr(
         orchestrator,
@@ -116,6 +125,11 @@ def collaborators(monkeypatch, tmp_path):
     monkeypatch.setattr(
         orchestrator, "merge_outputs", lambda task, outputs, usage=None: "the answer"
     )
+    # The answer passes its own check unless a test says otherwise; the
+    # revision path has its own tests below.
+    monkeypatch.setattr(
+        orchestrator, "judge", lambda task, answer, usage=None: Verdict(missing="", done=True)
+    )
     return monkeypatch
 
 
@@ -133,6 +147,7 @@ def test_happy_path_emits_the_full_event_sequence(collaborators):
         "phase", "deps",
         "phase", "start", "finish", "start", "finish",
         "phase", "merge",
+        "phase", "judged",
     ]
     assert ("merge", 2) in recorder.log
 
@@ -246,3 +261,107 @@ def test_a_library_agent_that_hardcoded_its_task_is_retired_and_rebuilt(
     assert "summary_agent" in result.built
     assert "summary_agent" not in result.reused
     assert "research_agent" in result.reused
+
+
+# --- the answer is checked, and rebuilt when it does not hold ------------------
+
+
+def test_a_short_answer_is_rejected_and_the_agents_run_again(collaborators):
+    """The point of the check: a run no longer ends wherever the merger stopped."""
+    verdicts = iter(
+        [Verdict(missing="the 200-word limit was ignored", done=False),
+         Verdict(missing="", done=True)]
+    )
+    collaborators.setattr(
+        orchestrator, "judge", lambda task, answer, usage=None: next(verdicts)
+    )
+    merges = iter(["first draft", "the revised answer"])
+    collaborators.setattr(
+        orchestrator, "merge_outputs", lambda task, outputs, usage=None: next(merges)
+    )
+
+    recorder = Recorder()
+    result = orchestrator.handle_task("write 200 words", events=recorder)
+
+    assert result.response == "the revised answer"
+    assert result.revisions == 1
+    assert recorder.kinds().count("merge") == 2
+    assert ("revision", 1) in recorder.log
+
+
+def test_the_revision_reruns_the_agents_on_the_gap_not_on_the_critique(collaborators):
+    """Replacing the task with the complaint is how a second attempt drifts."""
+    seen: list[str] = []
+
+    def spy(path, task, outputs, python_exe=None):
+        seen.append(task)
+        return ok_result(path)
+
+    collaborators.setattr(orchestrator, "execute_agent", spy)
+    verdicts = iter(
+        [Verdict(missing="no sources were cited", done=False), Verdict(missing="", done=True)]
+    )
+    collaborators.setattr(
+        orchestrator, "judge", lambda task, answer, usage=None: next(verdicts)
+    )
+
+    orchestrator.handle_task("write about logging", events=Recorder())
+
+    revised = seen[-1]
+    assert "write about logging" in revised  # the original request survives
+    assert "no sources were cited" in revised  # and the gap is added to it
+
+
+def test_a_revision_that_produces_nothing_keeps_the_first_answer(collaborators):
+    """A worse second attempt must not overwrite a usable first one."""
+    collaborators.setattr(
+        orchestrator,
+        "judge",
+        lambda task, answer, usage=None: Verdict(missing="not enough", done=False),
+    )
+    calls = {"n": 0}
+
+    def sometimes(path, task, outputs, python_exe=None):
+        calls["n"] += 1
+        # first round succeeds, every rerun fails
+        return ok_result(path) if calls["n"] <= 2 else failed_result(path)
+
+    collaborators.setattr(orchestrator, "execute_agent", sometimes)
+
+    result = orchestrator.handle_task("do a thing", events=Recorder())
+
+    assert result.response == "the answer"
+    assert result.revisions == 0
+
+
+def test_the_check_can_be_turned_off_entirely(collaborators):
+    """TASK_REVISIONS=0 means the judge is never called, so it is never billed."""
+    def explode(*args, **kwargs):  # pragma: no cover - must never run
+        raise AssertionError("judge must not be called when revisions are off")
+
+    collaborators.setattr(orchestrator, "judge", explode)
+    collaborators.setattr(orchestrator, "TASK_REVISIONS", 0)
+
+    recorder = Recorder()
+    result = orchestrator.handle_task("do a thing", events=recorder)
+
+    assert result.response == "the answer"
+    assert "judged" not in recorder.kinds()
+
+
+def test_a_library_agent_from_an_older_runtime_is_retired_and_rebuilt(collaborators):
+    """It would run perfectly and silently do less than the plan just promised."""
+    collaborators.setattr(orchestrator, "lookup", lambda name: SOURCE)
+    collaborators.setattr(
+        orchestrator, "up_to_date", lambda name: name != "research_agent"
+    )
+    dropped: list[str] = []
+    collaborators.setattr(orchestrator, "forget", lambda name: dropped.append(name) or True)
+
+    recorder = Recorder()
+    result = orchestrator.handle_task("do a thing", events=recorder)
+
+    assert dropped == ["research_agent"]
+    assert result.built == ["research_agent"]      # rewritten on the new runtime
+    assert result.reused == ["summary_agent"]      # still free
+    assert ("retired", "research_agent") in recorder.log

@@ -208,6 +208,15 @@ class PlainUI(TaskEvents):
         noun = "output" if survivors == 1 else "outputs"
         print(f"  merging {survivors} {noun}")
 
+    def answer_judged(self, done: bool, missing: str) -> None:
+        if done:
+            print("  checked the answer against the request - it holds")
+        else:
+            print(f"  the answer falls short: {first_line(missing, 100)}")
+
+    def revision_started(self, attempt: int, attempts: int, missing: str) -> None:
+        print(f"  revision {attempt}/{attempts} - running the agents again")
+
 
 def make_ui() -> PlainUI:
     """Pick the best renderer this session can actually sustain."""

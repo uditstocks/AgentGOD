@@ -630,3 +630,18 @@ class RichUI(PlainUI):
             return super().merge_started(survivors)
         noun = "output" if survivors == 1 else "outputs"
         board.activity = ("merge", f"merging {survivors} {noun} into one answer")
+
+    def answer_judged(self, done: bool, missing: str) -> None:
+        board = self._board
+        if board is None:
+            return super().answer_judged(done, missing)
+        board.activity = (
+            "check",
+            "the answer holds" if done else f"falls short: {first_line(missing, 70)}",
+        )
+
+    def revision_started(self, attempt: int, attempts: int, missing: str) -> None:
+        board = self._board
+        if board is None:
+            return super().revision_started(attempt, attempts, missing)
+        board.activity = ("check", f"revision {attempt}/{attempts} - running the agents again")

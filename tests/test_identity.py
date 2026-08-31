@@ -16,12 +16,11 @@ from identity import (
     describe_capabilities,
     describe_greeting,
     describe_identity,
-    describe_live_data_limit,
     snapshot,
 )
 
 SAMPLE = Snapshot(
-    model="openai/gpt-4o-mini",
+    model="claude-sonnet-5",
     max_agents=4,
     timeout_seconds=300,
     library=(("research_agent", "gather facts", 7),),
@@ -31,17 +30,17 @@ SAMPLE = Snapshot(
 
 def test_the_capability_answer_states_the_real_configuration():
     text = describe_capabilities(SAMPLE)
-    assert "openai/gpt-4o-mini" in text
+    assert "claude-sonnet-5" in text
     assert "4 agents per task" in text
     assert "1 agent kept" in text
     assert "12 runs archived" in text
 
 
 def test_the_capability_answer_lists_the_limits_not_just_the_strengths():
-    """The old answer promised live data. This one has to deny it."""
+    """Search is not browsing, and the difference is the one people assume away."""
     text = describe_capabilities(SAMPLE).lower()
     assert "cannot" in text
-    assert "no live internet" in text
+    assert "no browsing" in text
     assert "no images" in text or "text in, text out" in text
 
 
@@ -68,7 +67,7 @@ def test_every_limit_appears_in_the_answer():
 def test_the_identity_answer_describes_this_program_not_a_generic_assistant():
     text = describe_identity(SAMPLE)
     assert "AgentGod" in text
-    assert "openai/gpt-4o-mini" in text
+    assert "claude-sonnet-5" in text
     assert "research_agent" in text
     # the pipeline, which is the actual answer to "how do you work"
     for phase in ("plan", "forge", "run", "merge"):
@@ -79,24 +78,6 @@ def test_the_identity_answer_survives_an_empty_library():
     text = describe_identity(Snapshot(model="m", max_agents=2, timeout_seconds=1))
     assert "AgentGod" in text
     assert "first task" in text
-
-
-def test_the_live_data_answer_explains_and_offers_an_alternative():
-    text = describe_live_data_limit("what is the stock price of itc today")
-    assert "cannot look that up" in text
-    assert "internet" in text
-    assert "training cutoff" in text
-    # it must leave the user with something they can actually do
-    assert "I can " in text
-
-
-def test_the_live_data_answer_quotes_a_short_question_back():
-    assert "itc" in describe_live_data_limit("what is the stock price of itc today").lower()
-
-
-def test_the_live_data_answer_omits_an_unwieldy_question():
-    long_question = "what is the price " + "x" * 200
-    assert "xxxx" not in describe_live_data_limit(long_question)
 
 
 def test_the_greeting_tells_the_user_what_to_type_next():

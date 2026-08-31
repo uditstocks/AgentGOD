@@ -1,7 +1,7 @@
 """Shared configuration for the Dynamic Agent Creator.
 
-Uses the OpenRouter API (OpenAI-compatible) so any model on OpenRouter works.
-Set your key in .env:  OPENROUTER_API_KEY=sk-or-...
+Uses the Anthropic Messages API through the official `anthropic` SDK.
+Set your key in .env:  ANTHROPIC_API_KEY=sk-ant-...
 
 This is the only provider-aware module: model choice, client construction,
 response normalisation and cost accounting all live here.
@@ -9,15 +9,16 @@ response normalisation and cost accounting all live here.
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
+import anthropic
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
+from pydantic import BaseModel
 
 PROJECT_DIR = Path(__file__).parent
 
@@ -25,11 +26,14 @@ PROJECT_DIR = Path(__file__).parent
 # Real environment variables always win over .env values.
 load_dotenv(PROJECT_DIR / ".env")
 
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_CHAT_URL = f"{OPENROUTER_BASE_URL}/chat/completions"
+# Generated agents are standard library only, so they cannot import the SDK.
+# They POST to this endpoint themselves, which is why the URL and the wire
+# version live here, next to the client the main agent uses.
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
 
 # Default model (override with the MODEL env var).
-MODEL = os.getenv("MODEL", "openai/gpt-4o-mini")
+MODEL = os.getenv("MODEL", "claude-sonnet-5")
 
 # Where generated agent files live while they run.
 GENERATED_DIR = PROJECT_DIR / "generated_agents"
@@ -64,70 +68,198 @@ AGENT_REPAIR_ATTEMPTS = _int_env("AGENT_REPAIR_ATTEMPTS", 2)
 # How many times malformed generated code is regenerated before giving up.
 CODEGEN_ATTEMPTS = _int_env("CODEGEN_ATTEMPTS", 3)
 
-# Per-request LLM limits for the main agent.
-LLM_TIMEOUT_SECONDS = _int_env("LLM_TIMEOUT_SECONDS", 60)
+# How many times a finished answer that does not meet the request may be
+# attempted again. Each revision re-runs the agents, so it costs a full round;
+# 0 turns self-checking off entirely.
+TASK_REVISIONS = _int_env("TASK_REVISIONS", 1)
+
+# Per-request LLM limits for the main agent. The ceiling is generous because
+# the model reasons before it answers: a planning or code-generation call
+# spends real time thinking before the first output token appears.
+LLM_TIMEOUT_SECONDS = _int_env("LLM_TIMEOUT_SECONDS", 120)
 LLM_MAX_RETRIES = _int_env("LLM_MAX_RETRIES", 3)
+LLM_MAX_TOKENS = _int_env("LLM_MAX_TOKENS", 8192)
+
+# How hard the model works per call: low | medium | high | xhigh | max.
+# This is the knob that replaced temperature, which current models reject.
+LLM_EFFORT = os.getenv("LLM_EFFORT", "medium")
 
 # Upper bound on how much of one upstream result is forwarded to the next stage.
 MAX_CHARS_PER_INPUT = _int_env("MAX_CHARS_PER_INPUT", 6000)
 
+# Web search runs on Anthropic's servers, not here: the model issues the
+# queries and reads the results before it ever replies. That is why looking
+# something up needs no scraper, no search-provider key, and no new hole in
+# codeguard - a generated agent only adds this tool to its own request.
+WEB_SEARCH_TOOL_TYPE = "web_search_20260209"
+
+# How many searches one call may run. The ceiling is the cost control: a
+# question that needs more than this is a question that needs a better prompt.
+WEB_SEARCH_MAX_USES = _int_env("WEB_SEARCH_MAX_USES", 5)
+
+# The server loop pauses after 10 tool iterations and asks to be resumed.
+# Resuming is cheap; resuming forever is not.
+MAX_CONTINUATIONS = _int_env("MAX_CONTINUATIONS", 4)
+
 # Line prefix a generated agent uses to report token usage on stderr.
 USAGE_MARKER = "__AGENT_USAGE__"
 
-# USD per 1M tokens, used only for a rough run-cost estimate.
+# Bumped whenever the trusted runtime in generator.py gains or changes a
+# capability. A library agent written against an older runtime is retired and
+# rewritten rather than handed back: it cannot call what it never knew about,
+# and the planner has no way to tell. Version 2 added web search.
+AGENT_RUNTIME_VERSION = 2
+
+# USD per 1M tokens (input, output), used only for a rough run-cost estimate.
 PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
-    "openai/gpt-4o-mini": (0.15, 0.60),
-    "openai/gpt-4o": (2.50, 10.00),
-    "openai/gpt-4.1-mini": (0.40, 1.60),
-    "anthropic/claude-3.5-haiku": (0.80, 4.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-opus-5": (5.00, 25.00),
+    "claude-opus-4-8": (5.00, 25.00),
 }
 
 
 def require_api_key() -> None:
     """Fail fast with a helpful message if the key is missing."""
-    if not os.getenv("OPENROUTER_API_KEY"):
-        sys.exit("OPENROUTER_API_KEY is not set. Copy .env.example to .env and add your key.")
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        sys.exit("ANTHROPIC_API_KEY is not set. Copy .env.example to .env and add your key.")
 
 
-def get_llm(max_tokens: int = 8192, temperature: float = 0.0) -> ChatOpenAI:
-    """One place to build the LLM for the main agent.
+@functools.lru_cache(maxsize=1)
+def get_client() -> anthropic.Anthropic:
+    """The one Anthropic client the main agent uses.
 
-    temperature defaults to 0: planning and code generation are structural
-    decisions and must be reproducible run to run.
+    Cached: the SDK holds a connection pool, and rebuilding it per call throws
+    that away. Retries and the timeout are the client's own job, so no caller
+    has to reimplement backoff.
     """
-    return ChatOpenAI(
-        model=MODEL,
-        # Field alias: pydantic exposes `max_tokens` under this name.
-        max_completion_tokens=max_tokens,
-        temperature=temperature,
-        timeout=LLM_TIMEOUT_SECONDS,
+    return anthropic.Anthropic(
+        api_key=os.environ["ANTHROPIC_API_KEY"],
+        timeout=float(LLM_TIMEOUT_SECONDS),
         max_retries=LLM_MAX_RETRIES,
-        api_key=SecretStr(os.environ["OPENROUTER_API_KEY"]),
-        base_url=OPENROUTER_BASE_URL,
     )
 
 
-def response_text(response: Any) -> str:
-    """Normalise an LLM reply to plain text.
+def web_search_tool() -> dict[str, Any]:
+    """The server-side search tool, as a request declares it."""
+    return {
+        "type": WEB_SEARCH_TOOL_TYPE,
+        "name": "web_search",
+        "max_uses": WEB_SEARCH_MAX_USES,
+    }
 
-    langchain-core 1.x may return either a string or a list of content blocks,
-    so never touch `.content` directly.
+
+def complete(
+    prompt: str,
+    system: str | None = None,
+    max_tokens: int | None = None,
+    usage: Usage | None = None,
+    search: bool = False,
+) -> str:
+    """One Messages API call, returned as plain text.
+
+    `system` carries standing instructions; `prompt` carries this call's
+    material. Keeping them apart is what stops a long input from diluting the
+    rules - the API weighs a system prompt as policy, not as more input.
+
+    With `search=True` the model may look things up before answering. That
+    runs server-side, so the reply arrives complete rather than as a tool call
+    to service here - except that a long search session pauses partway and
+    asks to be resumed, which is what the loop below is for.
     """
-    accessor = getattr(response, "text", None)
-    if accessor is not None:
-        return str(accessor() if callable(accessor) and not isinstance(accessor, str) else accessor)
+    request: dict[str, Any] = {
+        "model": MODEL,
+        "max_tokens": max_tokens or LLM_MAX_TOKENS,
+        "output_config": {"effort": LLM_EFFORT},
+    }
+    if system:
+        request["system"] = system
+    if search:
+        request["tools"] = [web_search_tool()]
 
+    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    client = get_client()
+    for _ in range(MAX_CONTINUATIONS + 1):
+        message = client.messages.create(messages=messages, **request)
+        if usage is not None:
+            usage.record(message)
+        if message.stop_reason != "pause_turn":
+            break
+        # Resume by handing the paused turn straight back. No "continue"
+        # message: the server recognises its own trailing tool block and
+        # picks up where it stopped.
+        messages.append({"role": "assistant", "content": message.content})
+
+    return response_text(message)
+
+
+_Schema = TypeVar("_Schema", bound=BaseModel)
+
+
+def complete_structured(
+    prompt: str,
+    output_format: type[_Schema],
+    system: str | None = None,
+    max_tokens: int | None = None,
+    usage: Usage | None = None,
+) -> _Schema:
+    """One call whose reply is constrained to `output_format`, and validated.
+
+    The shape is enforced by the API rather than fished out of prose
+    afterwards, so a plan either arrives usable or not at all.
+    """
+    request: dict[str, Any] = {
+        "model": MODEL,
+        "max_tokens": max_tokens or LLM_MAX_TOKENS,
+        "output_config": {"effort": LLM_EFFORT},
+        "output_format": output_format,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if system:
+        request["system"] = system
+
+    message = get_client().messages.parse(**request)
+    if usage is not None:
+        usage.record(message)
+
+    parsed = getattr(message, "parsed_output", None)
+    if parsed is None:
+        raise ValueError(f"the model did not return a usable {output_format.__name__}")
+    return parsed
+
+
+def response_text(response: Any) -> str:
+    """Normalise a Messages API reply to plain text.
+
+    A reply is a list of content blocks, and on a reasoning model the first of
+    them is usually not the answer. Only `text` blocks are, so nothing here
+    ever touches `.content[0]` directly.
+    """
     content = getattr(response, "content", response)
     if isinstance(content, str):
         return content
-    if isinstance(content, list):
-        parts = [
-            block if isinstance(block, str) else str(block.get("text", ""))
-            for block in content
-            if isinstance(block, (str, dict))
-        ]
-        return "".join(parts)
-    return str(content)
+    if not isinstance(content, list):
+        return str(content)
+
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict):
+            if block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        elif getattr(block, "type", None) == "text":
+            parts.append(str(getattr(block, "text", "")))
+    return "".join(parts)
+
+
+def estimate_cost(input_tokens: float, output_tokens: float) -> float | None:
+    """Rough USD cost for a token count, or None if this model has no price here."""
+    price = PRICING_PER_MTOK.get(MODEL)
+    if price is None:
+        return None
+    return (input_tokens * price[0] + output_tokens * price[1]) / 1_000_000
 
 
 @dataclass
@@ -143,18 +275,29 @@ class Usage:
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
 
+    def merge(self, other: Usage) -> None:
+        """Fold another total into this one.
+
+        Some calls happen outside the pipeline that owns the run's accounting -
+        the clarifying question is asked before `handle_task` exists. Their
+        cost is still the user's, so it is added rather than quietly dropped.
+        """
+        self.calls += other.calls
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+
     def record(self, response: Any) -> None:
-        """Accumulate usage from a LangChain response, if it reported any."""
-        metadata = getattr(response, "usage_metadata", None) or {}
-        self.add(int(metadata.get("input_tokens") or 0), int(metadata.get("output_tokens") or 0))
+        """Accumulate usage from a Messages API reply, if it reported any."""
+        reported = getattr(response, "usage", None)
+        self.add(
+            int(getattr(reported, "input_tokens", 0) or 0),
+            int(getattr(reported, "output_tokens", 0) or 0),
+        )
 
     @property
     def cost_usd(self) -> float | None:
         """Rough cost estimate, or None when the model's price is unknown."""
-        price = PRICING_PER_MTOK.get(MODEL)
-        if price is None:
-            return None
-        return (self.input_tokens * price[0] + self.output_tokens * price[1]) / 1_000_000
+        return estimate_cost(self.input_tokens, self.output_tokens)
 
     def summary(self) -> str:
         cost = self.cost_usd

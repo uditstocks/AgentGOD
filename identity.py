@@ -37,22 +37,14 @@ SKILLS = (
 # by codeguard, the third by the stdin/stdout text contract, the fourth by
 # the executor running agents in a plain loop.
 LIMITS = (
-    "No live internet. No prices, weather, news, scores, or anything that changed "
-    "today - answers come from model knowledge, which has a training cutoff.",
+    "Web search, but no browsing. An agent can look something up before it "
+    "answers; it cannot log in, click through a site, or fill in a form.",
     "No writing to your files, no running your code, no shell commands. Generated "
     "agents are read-only by design and are checked before they are allowed to run.",
     "Text in, text out. No images, audio, video or spreadsheets.",
     "Agents run one after another, not in parallel, so a four-agent task takes "
     "roughly four times as long as a one-agent task.",
 )
-
-# Shown when someone asks for a number only the internet has.
-LIVE_DATA_ALTERNATIVES = (
-    "explain how that number is arrived at, and what moves it",
-    "compare the options or players involved",
-    "draft the analysis around it, and you paste the current figure in",
-)
-
 
 @dataclass(frozen=True)
 class Snapshot:
@@ -158,43 +150,19 @@ file, check that code before it is allowed to run, execute the agents in order -
 each one seeing what the agents before it produced - and merge the results into
 one answer. Then I ask whether to keep the agents or let them go.
 
-    plan  ▸  forge  ▸  deps  ▸  run  ▸  merge
+    plan  ▸  forge  ▸  deps  ▸  run  ▸  merge  ▸  check
 
 Nothing is hard-coded. There is no researcher or writer sitting here waiting for
 work; the team for your task is written seconds after you ask for it, and most of
 it is deleted a minute later. Agents that earn their keep go into a library and
 come back free next time.
 
-**Running on:** {state.model}, through OpenRouter, with up to {state.max_agents}
+**Running on:** {state.model}, through the Anthropic API, with up to {state.max_agents}
 agents per task and a {state.timeout_seconds}s ceiling on any one of them.
 
 **In the library:** {library}.
 
 Ask me `what can you do?` for the list of things I am actually good at."""
-
-
-def describe_live_data_limit(question: str = "") -> str:
-    """Answer a request for a number only the internet has - immediately.
-
-    This used to cost a full pipeline run: two agents, four LLM calls and
-    twenty seconds, all to arrive at "I cannot provide real-time data".
-    Saying so up front is both faster and more honest.
-    """
-    asked = question.strip()
-    about = f' — "{asked}"' if asked and len(asked) <= 90 else ""
-    alternatives = "\n".join(f"- I can {line}" for line in LIVE_DATA_ALTERNATIVES)
-    return f"""I cannot look that up{about}.
-
-I have no internet access, so live prices, weather, news, scores and today's
-date are all outside what I can see. Everything I produce comes from model
-knowledge, which has a training cutoff - if I guessed, the number would be
-confidently wrong, which is worse than no answer.
-
-For the live figure, use a source that actually reads it. Then:
-
-{alternatives}
-
-Paste the current numbers into your task and I will work with them properly."""
 
 
 def describe_greeting(state: Snapshot | None = None) -> str:

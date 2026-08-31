@@ -15,29 +15,20 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# The vetted pip packages, defined once in codeguard next to the import check
+# that lets them through. Installing a package the generated code may not
+# import is a wasted install; refusing an import for a package that installed
+# fine is a wasted run. One list makes both impossible.
+from codeguard import ALLOWED_PACKAGES
 from config import (
     AGENT_TIMEOUT_SECONDS,
     AGENT_VENV_DIR,
     GENERATED_DIR,
     PROJECT_DIR,
     USAGE_MARKER,
+    estimate_cost,
 )
 from planner import AgentSpec
-
-# Vetted pip packages a generated agent may use, mapped to their import names.
-# A model-invented package name is refused rather than installed: hallucinated
-# names are a supply-chain vector, not a typo to be helpfully resolved.
-ALLOWED_PACKAGES: dict[str, str] = {
-    "beautifulsoup4": "bs4",
-    "lxml": "lxml",
-    "markdown": "markdown",
-    "numpy": "numpy",
-    "pandas": "pandas",
-    "python-dateutil": "dateutil",
-    "pyyaml": "yaml",
-    "requests": "requests",
-    "tabulate": "tabulate",
-}
 
 # Splits "requests>=2.31.0" / "pandas[extra]" down to "requests" / "pandas".
 _REQUIREMENT_NAME = re.compile(r"^[A-Za-z0-9._-]+")
@@ -235,7 +226,11 @@ def _sanitise(text: str) -> str:
 
 
 def _extract_usage(stderr: str) -> tuple[dict[str, float], str]:
-    """Pull the agent's token report off stderr, returning the remaining text."""
+    """Pull the agent's token report off stderr, returning the remaining text.
+
+    The API bills tokens and says nothing about money, so the cost is priced
+    here from the same table the main agent's own calls are priced from.
+    """
     totals = {"input_tokens": 0.0, "output_tokens": 0.0, "cost_usd": 0.0}
     remaining: list[str] = []
     for line in stderr.splitlines():
@@ -246,9 +241,9 @@ def _extract_usage(stderr: str) -> tuple[dict[str, float], str]:
             usage = json.loads(line[len(USAGE_MARKER) :].strip())
         except ValueError:
             continue
-        totals["input_tokens"] += float(usage.get("prompt_tokens") or 0)
-        totals["output_tokens"] += float(usage.get("completion_tokens") or 0)
-        totals["cost_usd"] += float(usage.get("cost") or 0)
+        totals["input_tokens"] += float(usage.get("input_tokens") or 0)
+        totals["output_tokens"] += float(usage.get("output_tokens") or 0)
+    totals["cost_usd"] = estimate_cost(totals["input_tokens"], totals["output_tokens"]) or 0.0
     return totals, "\n".join(remaining).strip()
 
 

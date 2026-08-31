@@ -7,6 +7,7 @@ import sys
 import pytest
 
 import executor
+from config import estimate_cost
 from executor import (
     AgentResult,
     execute_agent,
@@ -126,14 +127,15 @@ def test_usage_is_parsed_off_stderr(tmp_path):
         "import json, sys\n"
         "json.loads(sys.stdin.read())\n"
         "print('__AGENT_USAGE__ ' + json.dumps("
-        "{'prompt_tokens': 11, 'completion_tokens': 5, 'cost': 0.25}), file=sys.stderr)\n"
+        "{'input_tokens': 11, 'output_tokens': 5}), file=sys.stderr)\n"
         "print('the answer')\n",
     )
     result = run(agent)
     assert result.ok
     assert result.output == "the answer"  # marker line stayed out of stdout
     assert (result.input_tokens, result.output_tokens) == (11, 5)
-    assert result.cost_usd == pytest.approx(0.25)
+    # The API bills tokens, not money, so the cost is priced locally.
+    assert result.cost_usd == pytest.approx(estimate_cost(11, 5))
 
 
 def test_usage_marker_is_stripped_from_error_text(tmp_path):
@@ -142,7 +144,7 @@ def test_usage_marker_is_stripped_from_error_text(tmp_path):
         "usage_fail_agent",
         "import json, sys\n"
         "json.loads(sys.stdin.read())\n"
-        "print('__AGENT_USAGE__ {\"prompt_tokens\": 3}', file=sys.stderr)\n"
+        "print('__AGENT_USAGE__ {\"input_tokens\": 3}', file=sys.stderr)\n"
         "sys.exit(2)\n",
     )
     result = run(agent)

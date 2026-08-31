@@ -177,7 +177,7 @@ def test_ask_strips_stdin_noise(monkeypatch, raw):
 
 def test_key_prompt_refuses_non_interactive_stdin(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(main.sys.stdin, "isatty", lambda: False)
 
     def explode(_message):  # pragma: no cover - must never run
@@ -190,7 +190,7 @@ def test_key_prompt_refuses_non_interactive_stdin(monkeypatch, tmp_path):
 
 def test_key_prompt_rejects_text_that_is_not_a_key(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(main.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(main, "ask", lambda _message: "discard")
     assert main._check_api_key() is False
@@ -199,9 +199,9 @@ def test_key_prompt_rejects_text_that_is_not_a_key(monkeypatch, tmp_path):
 
 def test_key_prompt_saves_a_plausible_key(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(main.sys.stdin, "isatty", lambda: True)
-    entered = "sk-or-v1-" + "a" * 64
+    entered = "sk-ant-api03-" + "a" * 64
     monkeypatch.setattr(main, "ask", lambda _message: entered)
     assert main._check_api_key() is True
     assert entered in (tmp_path / ".env").read_text(encoding="utf-8")

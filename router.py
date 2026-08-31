@@ -32,7 +32,6 @@ class Intent(str, Enum):
     CAPABILITY = "capability"
     IDENTITY = "identity"
     HELP = "help"
-    LIVE_DATA = "live_data"
 
     @property
     def is_task(self) -> bool:
@@ -193,35 +192,6 @@ _HELP_PATTERNS = _anchored(
     r"commands",
 )
 
-# Questions whose only correct answer is a value this program cannot see.
-# Deliberately narrow: it fires on a request for a live reading, never on
-# "write a report on current AI trends", which is real, answerable work.
-_LIVE_SUBJECT = (
-    r"(?:stock|share|market)? ?price|stock|shares?|weather|temperature|forecast|"
-    r"news|headlines|scores?|rates?|exchange rate|time|date|day|traffic|standings"
-)
-_LIVE_QUALIFIER = (
-    r"(?:today|todays|now|right now|current|currently|latest|live|"
-    r"at the moment|this (?:morning|evening|week))"
-)
-
-_LIVE_DATA_PATTERNS = [
-    # "what is the stock price of itc today", "current weather in delhi"
-    re.compile(
-        r"^(?:what(?:s| is| are)?|hows?|tell me) .*\b(?:" + _LIVE_SUBJECT
-        + r")\b.*\b" + _LIVE_QUALIFIER + r"\b"
-    ),
-    re.compile(
-        r"^(?:what(?:s| is| are)?|hows?|tell me) .*\b" + _LIVE_QUALIFIER
-        + r"\b.*\b(?:" + _LIVE_SUBJECT + r")\b"
-    ),
-    # "what time is it", "what is todays date"
-    re.compile(r"^what(?:s| is)? (?:the )?(?:time|date|day)(?: is it| today| right now| now)?$"),
-    re.compile(r"^what time is it"),
-    # "itc share price today"
-    re.compile(r"^[\w\s]{0,40}\b(?:share|stock) price\b.*\b" + _LIVE_QUALIFIER + r"\b"),
-]
-
 # Verbs that turn a sentence into an instruction. Their presence means the
 # user wants work done, whatever else the sentence happens to contain - the
 # guard that keeps "can you write a poem" out of the capability bucket.
@@ -307,8 +277,6 @@ def classify(text: str) -> Intent:
         return Intent.CAPABILITY
     if _matches(_IDENTITY_PATTERNS, normalised):
         return Intent.IDENTITY
-    if _matches(_LIVE_DATA_PATTERNS, normalised):
-        return Intent.LIVE_DATA
 
     if _looks_like_a_question_about_us(words):
         return Intent.CAPABILITY

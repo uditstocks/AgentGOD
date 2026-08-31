@@ -7,7 +7,15 @@ import json
 import pytest
 
 import library
-from library import catalogue, describe_for_planner, forget, lookup, record_use, remember
+from library import (
+    catalogue,
+    describe_for_planner,
+    forget,
+    lookup,
+    record_use,
+    remember,
+    up_to_date,
+)
 
 SOURCE = "def run(task, previous_outputs):\n    return 'ok'\n"
 
@@ -117,3 +125,32 @@ def test_index_is_valid_json_with_a_version(isolated_library):
 def test_a_traversing_name_is_refused(isolated_library):
     assert remember("../../escaped", "role", SOURCE) is False
     assert not (isolated_library.parent / "escaped.py").exists()
+
+
+# --- the second promise: an agent must match the runtime it will run on --------
+
+
+def test_a_freshly_remembered_agent_is_current():
+    remember("research_agent", "gather", SOURCE, task="t")
+    assert up_to_date("research_agent")
+
+
+def test_an_agent_from_before_the_stamp_is_not_current():
+    """The four agents already on disk when search shipped had no version."""
+    remember("research_agent", "gather", SOURCE, task="t")
+    entries = library._read_index()
+    entries["research_agent"].runtime = 0
+    library._write_index(entries)
+    assert not up_to_date("research_agent")
+
+
+def test_an_agent_built_against_an_older_runtime_is_not_current():
+    remember("research_agent", "gather", SOURCE, task="t")
+    entries = library._read_index()
+    entries["research_agent"].runtime = library.AGENT_RUNTIME_VERSION - 1
+    library._write_index(entries)
+    assert not up_to_date("research_agent")
+
+
+def test_an_agent_that_is_not_in_the_library_is_not_current():
+    assert not up_to_date("never_built_agent")
