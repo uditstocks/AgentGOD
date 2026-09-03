@@ -1,5 +1,30 @@
 # Changelog
 
+## An acronym is a subject - 2026-09-03
+
+A `code_agent` built for "convert any link or text into qr code" kept the
+words "QR code images" in its own prompt, passed every reuse check, and then
+answered an unrelated question about natural-language-to-SQL with a QR-code
+generator. The merger, handed that output, told the user about it.
+
+- **topicguard: noise is decided by vocabulary, never by length.** The subject
+  extractor required four letters, on the theory that short words are noise.
+  They are not - the noise words are already named in the craft and connective
+  vocabularies, and what the length rule actually threw away was the most
+  subject-specific tokens a task can carry: `qr`, `ai`, `ml`, `sql`, `3d`.
+  The minimum is now two letters and both vocabularies do the filtering, so
+  `how`, `one` and `you` are still dropped while an acronym survives.
+- **This heals existing libraries with no manual step.** `reusable()` runs on
+  every lookup, so an agent kept under the old guard is refused, retired and
+  rebuilt by the next task that reaches for it - no migration, no `/forget`.
+  `/audit` reports them if you want to look first.
+- **The merger never narrates the machinery.** An output that is off-topic or
+  about something the user never asked for is ignored outright: no "an
+  unrelated script was mistakenly produced", no apology, no report on how the
+  work went. It is also told that a plan for code is not code when code was
+  what was asked for.
+- 631 tests (was 624), ruff clean, pyright 0 errors.
+
 ## A real command line, and errors that speak English - 2026-09-03
 
 The engine was already good. This release is about everything around it: the

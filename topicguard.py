@@ -61,6 +61,8 @@ _CRAFT_VOCABULARY = """
     please help need want ask question subject topic topics about here there
     this that these those with from into their there then than such very just
     what which who whom when where does will should would could been being
+    how why one two who use uses using get gets got let may can also per via
+    my me us it is if do did done was were has had are you your our its
 """
 
 CRAFT_WORDS = frozenset(_CRAFT_VOCABULARY.split())
@@ -75,8 +77,16 @@ _CONNECTIVE_VOCABULARY = """
 
 CONNECTIVES = frozenset(_CONNECTIVE_VOCABULARY.split())
 
-# Words too short to identify a subject on their own.
-MIN_SUBJECT_LENGTH = 3
+# The shortest run of letters that can still name a subject.
+#
+# This was 4, on the theory that short words are noise. They are not: the
+# noise words are named in the vocabularies above, and what the length rule
+# actually threw away was acronyms - "qr", "ai", "ml", "sql", "3d". Those are
+# the MOST subject-specific tokens a task can contain, and dropping them let a
+# `code_agent` built for "convert text into qr code" keep "QR code images" in
+# its own prompt, pass every reuse check, and answer an unrelated SQL question
+# with a QR-code generator.
+MIN_SUBJECT_LENGTH = 2
 
 # How many of the task's own two-word phrases may reappear in the source
 # before it is a copy of the task rather than a description of a role. One is
@@ -103,9 +113,17 @@ def _numbers(text: str) -> set[str]:
 
 
 def subject_words(words: list[str]) -> set[str]:
-    """The words in `words` that actually name a subject."""
+    """The words in `words` that actually name a subject.
+
+    Noise is decided by the vocabularies, never by length - so a two-letter
+    acronym survives while "the" and "how" do not.
+    """
     return {
-        word for word in words if len(word) > MIN_SUBJECT_LENGTH and word not in CRAFT_WORDS
+        word
+        for word in words
+        if len(word) >= MIN_SUBJECT_LENGTH
+        and word not in CRAFT_WORDS
+        and word not in CONNECTIVES
     }
 
 

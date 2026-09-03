@@ -223,3 +223,49 @@ def test_an_evolution_advances_the_generation_and_wipes_the_record():
     assert entry.generation == 2
     assert (entry.wins, entry.losses) == (0, 0)
     assert library.reliable("writer_agent") is True
+
+
+# --- a poisoned agent heals itself, with no manual step -------------------------
+
+
+def test_an_agent_poisoned_under_the_old_guard_is_refused_on_sight():
+    """The production guarantee: nobody has to run /audit or /forget by hand.
+
+    Agents kept before the subject extractor understood acronyms are sitting
+    in real libraries right now. reusable() is consulted on every lookup, so
+    the next task that reaches for one retires it and rebuilds it clean -
+    no migration, no manual purge.
+    """
+    poisoned = (
+        "def run(task, previous_outputs):\n"
+        "    system = 'You write runnable scripts that generate QR code images.'\n"
+        "    return call_llm(task, system=system)\n"
+    )
+    remember(
+        "code_agent",
+        "write or explain code",
+        poisoned,
+        task="write a python code to convert any link or text into qr code",
+    )
+    # It is on disk and would be handed back for free...
+    assert lookup("code_agent") == poisoned
+    # ...but the guard refuses it, which is what makes the orchestrator retire it.
+    assert library.reusable("code_agent") is False
+    assert "code_agent" in library.audit()
+
+
+def test_a_clean_agent_is_not_swept_up_by_the_stricter_guard():
+    """A stricter rule that retires everything would cost more than it saves."""
+    clean = (
+        "def run(task, previous_outputs):\n"
+        "    system = 'You are a code agent. Write the code the task asks for.'\n"
+        "    return call_llm(task, system=system)\n"
+    )
+    remember(
+        "code_agent",
+        "write or explain code",
+        clean,
+        task="write a python code to convert any link or text into qr code",
+    )
+    assert library.reusable("code_agent") is True
+    assert library.audit() == {}

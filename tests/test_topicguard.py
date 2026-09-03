@@ -276,3 +276,55 @@ def run(task: str, previous_outputs: dict) -> str:
 
 def test_a_task_with_no_figures_is_unaffected():
     assert check_topic_leakage(HARDCODES_THE_LIMIT, "write a brief on unit tests") == []
+
+
+# --- acronyms are subjects, not noise -------------------------------------------
+#
+# The real failure this pins: a `code_agent` built for "convert any link or
+# text into qr code" kept "QR code images" in its own prompt. The subject
+# extractor required four letters, so "qr" was never banned, the agent passed
+# every reuse check, and an unrelated SQL question came back answered with a
+# QR-code generator.
+
+
+def test_a_two_letter_acronym_is_a_subject():
+    from topicguard import task_subjects
+
+    assert "qr" in task_subjects("write a python script to convert text into qr code")
+    assert "ai" in task_subjects("explain how AI changed hiring")
+    assert "ml" in task_subjects("compare ML frameworks")
+    assert "sql" in task_subjects("convert natural language into SQL commands")
+
+
+def test_short_craft_words_are_still_noise():
+    """Lowering the length rule must not start banning ordinary words."""
+    from topicguard import task_subjects
+
+    subjects = task_subjects("In one line, explain how you would do this")
+    for noise in ("one", "how", "you", "do", "in", "this"):
+        assert noise not in subjects
+
+
+def test_an_agent_that_hardcoded_a_short_acronym_is_caught():
+    from topicguard import check_topic_leakage, is_reusable
+
+    source = (
+        "def run(task, previous_outputs):\n"
+        "    system = 'You write runnable scripts that generate QR code images.'\n"
+        "    return call_llm(task, system=system)\n"
+    )
+    built_for = "write a python code to convert any link or text into qr code"
+    assert check_topic_leakage(source, built_for) != []
+    assert is_reusable(source, built_for) is False
+
+
+def test_a_genuinely_topic_agnostic_agent_still_passes():
+    """The guard must not start rejecting every agent it is shown."""
+    from topicguard import is_reusable
+
+    source = (
+        "def run(task, previous_outputs):\n"
+        "    system = 'You are a code agent. Write the code the task asks for.'\n"
+        "    return call_llm(task, system=system)\n"
+    )
+    assert is_reusable(source, "write a python code to convert text into qr code") is True

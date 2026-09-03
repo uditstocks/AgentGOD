@@ -401,3 +401,21 @@ def test_a_generated_agent_may_call_deep_without_redefining_it():
         "    return draft\n"
     )
     assert check_agent_source(generator.assemble_agent(body)) == []
+
+
+def test_the_forbidden_word_list_names_acronyms_to_the_generator():
+    """The subject ban is what stops an agent hardcoding today's topic.
+
+    It is rendered from task_subjects(), so an acronym missing there is an
+    acronym the generator is never warned about - which is how a code_agent
+    came to carry "QR code images" in its own prompt forever.
+    """
+    from topicguard import task_subjects
+
+    banned = task_subjects("write a python code to convert any link or text into qr code")
+    assert "qr" in banned
+    rendered = generator._SUBJECT_BAN.format(
+        words=", ".join(repr(word) for word in banned)
+    )
+    assert "'qr'" in rendered
+    assert "FORBIDDEN WORDS" in rendered
