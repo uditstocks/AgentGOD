@@ -256,6 +256,10 @@ it goes, that usually means it deserves a new module.
 - All presentation lives behind one surface. `PlainUI` (in `ui.py`) is the
   reference implementation: every visual the product can show exists as an
   aligned, colorless ASCII line, safe for pipes, CI and redirected output.
+- **Three streams, one rule.** The answer is stdout, always. Narration is
+  stdout only when a person is watching; into a pipe it moves to stderr.
+  Errors are stderr always, and survive `--quiet` - suppressing an answer's
+  decoration must never suppress the reason a run died.
 - `RichUI` (in `richui.py`) subclasses it and repaints the same surface with
   `rich`: the startup wordmark, a live phase rail, a per-agent status board
   with spinners, the answer panel, and the run transcript. Anything it does
@@ -265,6 +269,30 @@ it goes, that usually means it deserves a new module.
   dependency on purpose - the product must run before its wardrobe arrives.
 - Neither module imports the rest of the project: every fact they display
   (model name, limits, results) arrives as an argument or through an event.
+
+### `cli.py` - the command-line contract (no project imports)
+- One argparse surface: the positional task, `--task` (REMAINDER, so task
+  text may contain flag-shaped words), `-` for stdin, the output flags
+  (`--plain`, `--quiet`, `--json`), the per-invocation overrides
+  (`--model`, `--effort`, `--council`) and the keep policy.
+- Exit codes are the contract: 0 succeeded, 1 failed, 2 usage, 130 interrupt.
+- `apply()` writes overrides into the environment *before* `config` is
+  imported, so a flag and a `.env` value take the same path - there is no
+  second configuration system to keep in sync.
+- Imports nothing from the project, so `--version` and usage errors work
+  even before dependencies are installed. `__version__` lives here and
+  `pyproject.toml` reads it, so one number is the truth.
+
+### `problems.py` - failures, translated
+- `explain(error) -> Problem(headline, advice, technical)`. Exceptions are
+  matched by class name across the MRO rather than imported types, so the
+  translator never fails on an import and survives an SDK version change.
+- Every branch names the thing the user can change: the key, the model, the
+  connection, the timeout. `_explain_every_agent_failed` reads the shared
+  cause out of the orchestrator's report - four identical timeouts are one
+  story, not four.
+- The raw text is kept as `technical` so renderers can dim it. The headline
+  is never a class name.
 
 ### `main.py` - the conversation
 - Validates `ANTHROPIC_API_KEY`, loops on the task prompt, hands each run's

@@ -42,8 +42,8 @@ LIMITS = (
     "No writing to your files, no running your code, no shell commands. Generated "
     "agents are read-only by design and are checked before they are allowed to run.",
     "Text in, text out. No images, audio, video or spreadsheets.",
-    "Agents run one after another, not in parallel, so a four-agent task takes "
-    "roughly four times as long as a one-agent task.",
+    "Independent agents run side by side; agents that need each other's "
+    "output still wait their turn, so a long chain is still a long chain.",
 )
 
 @dataclass(frozen=True)
@@ -146,9 +146,10 @@ def describe_identity(state: Snapshot | None = None) -> str:
     return f"""I am **AgentGod**: one permanent process that never does your work itself.
 
 Give me a task and I plan the team it needs, write each agent as a real Python
-file, check that code before it is allowed to run, execute the agents in order -
-each one seeing what the agents before it produced - and merge the results into
-one answer. Then I ask whether to keep the agents or let them go.
+file, check that code before it is allowed to run, execute the agents in waves -
+independent ones side by side, each seeing exactly what it depends on - and
+merge the results into one answer. Then I ask whether to keep the agents or
+let them go.
 
     plan  ▸  forge  ▸  deps  ▸  run  ▸  merge  ▸  check
 
@@ -182,6 +183,10 @@ Try something with a shape to it:
 
 def describe_thanks() -> str:
     return "Any time. Give me another task whenever you are ready."
+
+
+def describe_acknowledgement() -> str:
+    return "Ready when you are - describe the next task, or `quit` to leave."
 
 
 def describe_farewell() -> str:

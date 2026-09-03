@@ -25,6 +25,7 @@ from config import (
     WEB_SEARCH_MAX_USES,
     WEB_SEARCH_TOOL_TYPE,
     Usage,
+    cached_system,
     complete,
 )
 from executor import requirement_name
@@ -306,13 +307,12 @@ if __name__ == "__main__":
     print(run(payload["task"], payload.get("previous_outputs") or {}))
 """
 
-GENERATOR_PROMPT = """You are a code generator for a multi-agent system.
+# The half of the generator prompt that never changes: the contract, the
+# helper catalogue, the quality bar and the reuse rule. It is thousands of
+# tokens, identical on every agent of every run, so it travels as a cached
+# system block instead of being re-billed as fresh input each time.
+GENERATOR_POLICY = """You are a code generator for a multi-agent system.
 Write the logic for ONE specialized agent - a professional-grade one.
-
-Agent name: {name}
-Agent role: {role}
-Agent instructions:
-{instructions}
 
 Write ONLY a top-level function with this exact signature, plus any small
 helper functions it needs:
@@ -336,8 +336,6 @@ write an "if __name__" block:
     chunk(text, size=...) -> list[str]            # split long material
     constraints(task) -> list[str]                # length/format demands in the task
     word_count(text) -> int                       # for checking a stated limit
-
-{upstream_contract}
 
 BUILD A REAL SPECIALIST, NOT A ONE-LINE WRAPPER.
 
@@ -376,11 +374,22 @@ Other rules:
 - `json`, `os`, `re`, `sys`, `time`, `urllib` and `pathlib` are already
   imported. The rest of the standard library is available too - import what
   you actually need at the top of your code, and nothing you do not.
-{packages}
 - No file writing, no shelling out, no eval. `subprocess`, `multiprocessing`,
   `shutil`, `socket`, `pickle` and `importlib` are refused.
 - Readable and self-contained. Every line must earn its place.
 - Output ONLY Python code. No explanations, no markdown fences.
+"""
+
+# The per-agent half: what this one agent is, what it will receive, and what
+# it may import. All of it changes between agents, so none of it is cached.
+GENERATOR_BRIEF = """Agent name: {name}
+Agent role: {role}
+Agent instructions:
+{instructions}
+
+{upstream_contract}
+
+{packages}
 """
 
 _FIRST_AGENT_CONTRACT = """This is the FIRST agent, so `previous_outputs` is an empty dict.
@@ -515,7 +524,7 @@ def generate_agent_code(
     the generated source against it, because an agent that hardcodes today's
     subject is wrong on every task after this one.
     """
-    prompt = GENERATOR_PROMPT.format(
+    prompt = GENERATOR_BRIEF.format(
         name=spec.name,
         role=spec.role,
         instructions=spec.instructions,
@@ -536,7 +545,13 @@ def generate_agent_code(
                 problems="\n".join(f"- {problem}" for problem in problems)
             )
 
-        reply = complete(attempt_prompt, max_tokens=8000, usage=usage, effort=effort)
+        reply = complete(
+            attempt_prompt,
+            system=cached_system(GENERATOR_POLICY),
+            max_tokens=8000,
+            usage=usage,
+            effort=effort,
+        )
         body = _strip_code_fences(reply).strip()
         source = assemble_agent(body, spec)
         # Safety first, then reusability: there is no point telling the model

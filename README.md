@@ -7,7 +7,7 @@
 ### One agent that writes other agents - runs them, merges their answers, and deletes them.
 
 ![python](https://img.shields.io/badge/python-3.10%2B-334155?style=flat-square&labelColor=0d1117)
-![tests](https://img.shields.io/badge/tests-526%20passed-15803d?style=flat-square&labelColor=0d1117)
+![tests](https://img.shields.io/badge/tests-599%20passed-15803d?style=flat-square&labelColor=0d1117)
 ![ruff](https://img.shields.io/badge/ruff-clean-15803d?style=flat-square&labelColor=0d1117)
 ![pyright](https://img.shields.io/badge/pyright-0%20errors-15803d?style=flat-square&labelColor=0d1117)
 ![model](https://img.shields.io/badge/model-claude--sonnet--5-334155?style=flat-square&labelColor=0d1117)
@@ -41,26 +41,51 @@ No agent exists before you ask for it. Most no longer exist a minute later.
 ```bash
 git clone https://github.com/uditstocks/AgentGOD.git
 cd AgentGOD
-pip install -r requirements.txt
+pip install -e .[rich]      # installs the `agentgod` command
 ```
 
-Get a key from **[console.anthropic.com](https://console.anthropic.com/settings/keys)**, then:
+Then run it - it will ask for your key the first time (input hidden,
+verified against the API, saved to a gitignored `.env`):
 
 ```bash
-cp .env.example .env        # Windows:  Copy-Item .env.example .env
+agentgod
 ```
 
-```ini
-# .env
-ANTHROPIC_API_KEY=sk-ant-...
+That is the whole setup. Prefer doing it by hand? `pip install -r
+requirements.txt`, copy `.env.example` to `.env`, paste a key from
+**[console.anthropic.com](https://console.anthropic.com/settings/keys)**, and
+`python main.py` - both spellings are the same program. A real environment
+variable outranks the file, so CI can inject the key without one.
+
+---
+
+## The command line
+
+```
+agentgod                                  interactive session
+agentgod "write a haiku about rain"       one task, then exit
+agentgod --json "compare X and Y"         machine-readable result on stdout
+echo summarise this repo | agentgod -     task text from stdin
+agentgod library | stats | history        the free, offline commands (no key)
+agentgod --discard "one-off experiment"   run without growing the library
+
+exit codes    0 succeeded · 1 failed · 2 bad usage · 130 interrupted
 ```
 
-```bash
-python main.py
-```
+The streams honour the Unix contract: **the answer is stdout, everything
+else is not.** Pipe or redirect a run and the progress narration moves to
+stderr, so `agentgod "..." > answer.md` captures exactly the answer.
+`--quiet` prints only the answer even at a terminal; `--json` emits one
+object with the answer, the team, the cost, and how the run went.
 
-That is the whole setup. One key, one command. A real environment variable
-outranks the file, so CI can inject the key without one.
+Per-invocation control, no config edits: `--model`, `--effort low..max`,
+`--council auto|always|off`, and `--keep` / `--discard` / `--no-input` for
+scripts that must never prompt. Everything after `--task` is task text,
+never a flag, so a task may safely contain the word `--json`.
+
+When something breaks, the error says what happened and what to do - "Your
+API key was rejected. Check ANTHROPIC_API_KEY in .env..." - with the raw
+detail dimmed underneath, never a bare JSON dump.
 
 ---
 
@@ -92,7 +117,7 @@ and a compact transcript.
   run    10.4s · 5 LLM calls · 1,395 in / 226 out · ~$0.0003
   saved  runs/20260825_221204_translate-the-phrase.md
 
-  ❯ Keep the 1 new agent (translation_agent) for reuse? [keep/discard]:
+  ❯ Keep the 1 new agent (translation_agent) for reuse? [Keep/discard/always] (Enter = keep):
 ```
 
 Pipe it, redirect it, run it in CI, or run it without `rich` installed, and
@@ -100,7 +125,7 @@ the same run degrades to clean, aligned plain text - same information, no
 color, no animation, nothing that fights a log file:
 
 ```
-$ python main.py --plain --task "In one line, name one benefit of static typing."
+$ agentgod --plain "In one line, name one benefit of static typing."
 
 [1/5] Planning agents...
   - research_agent: gather facts about the benefits of static typing
@@ -440,7 +465,7 @@ ranked by how often they have actually been used.
   $ pip install pytest ruff pyright
 
   $ pytest
-+ 526 passed
++ 599 passed
 
   $ ruff check .
 + All checks passed!
@@ -477,6 +502,8 @@ Everything below has a working default. Only the key is required.
 | `TASK_REVISIONS` | `1` | Rebuilds allowed when the answer misses the request. `0` turns self-checking off |
 | `WEB_SEARCH_MAX_USES` | `5` | Searches one agent call may run |
 | `AGENTGOD_PLAIN` | - | Force plain output (same as `--plain`) |
+| `AGENTGOD_KEEP` | - | Standing keep answer: `always` or `never` |
+| `CLARIFY` | `auto` | The one pre-run question: `auto` or `off` |
 | `NO_COLOR` | - | Keep the interface, strip the color |
 
 The interface needs `rich`, but only wants it: if it is missing, every run
@@ -488,7 +515,9 @@ plain text automatically.
 ## The structure
 
 ```diff
+  cli.py              the command line: flags, verbs, exit codes
   main.py             the only file that speaks to a human
+  problems.py         a failure → what happened, and what to do about it
   ui.py               the presentation surface - and its plain-text fallback
   richui.py           the live interface: phase rail, agent board, panels
   events.py           the seam: the pipeline emits, the interface draws

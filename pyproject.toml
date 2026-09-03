@@ -1,8 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "dynamic-agent-creator"
-version = "0.1.0"
+name = "agentgod"
+dynamic = ["version"]
 description = "One permanent AI agent that builds, runs and retires other agents per task."
+readme = "README.md"
 requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=1.0,<2.0",
+    "pydantic>=2.7,<3.0",
+    "python-dotenv>=1.0,<2.0",
+]
+
+[project.optional-dependencies]
+# The full terminal experience. Without it every run still works in plain text.
+rich = ["rich>=13.7,<15"]
+
+[project.scripts]
+agentgod = "main:cli_main"
+
+[tool.setuptools]
+# The project is deliberately flat: one file, one responsibility.
+py-modules = [
+    "attachments", "cli", "codeguard", "commands", "config", "conversation",
+    "council", "events", "executor", "generator", "identity", "inventory",
+    "judgment", "library", "main", "merger", "orchestrator", "planner",
+    "problems", "richui", "router", "runlog", "taskgraph", "topicguard", "ui",
+]
+
+[tool.setuptools.dynamic]
+# --version, the installed dist, and the docs all read one number: cli.py's.
+version = {attr = "cli.__version__"}
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

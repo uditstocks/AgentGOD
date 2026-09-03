@@ -253,6 +253,37 @@ def _extract_usage(stderr: str) -> tuple[dict[str, float], str]:
     return totals, "\n".join(remaining).strip()
 
 
+# The failure texts the trusted agent runtime itself produces when the world,
+# not the code, is broken. They are fixed strings from generator.AGENT_HEADER
+# and this module, so matching on them is matching on our own wording.
+_ENVIRONMENTAL = (
+    "timed out after",  # this module's own timeout message
+    "could not start agent",  # interpreter/OS problem
+    "ANTHROPIC_API_KEY is not set",  # the header's missing-key exit
+    "the API returned HTTP",  # the header's non-retryable HTTP exit
+    "API request failed",  # the header's retries-exhausted exit
+)
+
+# The subset above that a plain retry can plausibly fix: the service was
+# briefly unhappy. A timeout or a missing key will fail identically again.
+_TRANSIENT = ("the API returned HTTP", "API request failed")
+
+
+def is_environmental(error: str) -> bool:
+    """Whether an agent's failure text blames the environment, not the code.
+
+    Regenerating an agent because the API returned 429 rewrites working code
+    to fix a problem that is not in the code - and bills two generation
+    calls to do it.
+    """
+    return any(marker in error for marker in _ENVIRONMENTAL)
+
+
+def is_transient(error: str) -> bool:
+    """Whether the environmental failure is worth one plain re-run."""
+    return any(marker in error for marker in _TRANSIENT)
+
+
 def execute_agent(
     path: Path,
     task: str,

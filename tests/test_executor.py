@@ -260,3 +260,22 @@ def test_no_grade_leaves_the_environment_alone(tmp_path, monkeypatch):
     result = execute_agent(agent, "t", {}, python_exe=PYTHON)
     assert result.ok
     assert result.output == "unset"
+
+
+# --- environmental failures: the world broke, not the code ---------------------
+
+
+def test_environmental_failures_are_recognised():
+    from executor import is_environmental, is_transient
+
+    assert is_environmental("timed out after 300s")
+    assert is_environmental("ANTHROPIC_API_KEY is not set.")
+    assert is_environmental("the API returned HTTP 401 Unauthorized")
+    assert is_environmental("API request failed: HTTP 529")
+    assert is_environmental("could not start agent: [WinError 2]")
+    assert not is_environmental("Traceback (most recent call last): KeyError: 'x'")
+
+    assert is_transient("API request failed: HTTP 429")
+    assert is_transient("the API returned HTTP 503")
+    assert not is_transient("timed out after 300s")
+    assert not is_transient("ANTHROPIC_API_KEY is not set.")

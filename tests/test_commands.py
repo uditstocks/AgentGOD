@@ -205,3 +205,65 @@ def test_library_listing_carries_the_record(tmp_path, monkeypatch):
     assert "writer_agent" in reply
     assert "1W/0L" in reply
     assert "gen 2" in reply
+
+
+# --- the archive is reachable, not just written -------------------------------
+
+
+def _with_runs(tmp_path, monkeypatch, *titles):
+    """Point RUNS_DIR at a temp folder holding one archive file per title."""
+    import os
+
+    import config
+
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    for index, title in enumerate(titles):
+        path = runs / f"run_{index}.md"
+        path.write_text(f"# {title}\n\n## Answer\n\nthe answer to {title}\n", encoding="utf-8")
+        # Distinct mtimes so "most recent first" is deterministic.
+        stamp = 1_700_000_000 + index
+        os.utime(path, (stamp, stamp))
+    monkeypatch.setattr(config, "RUNS_DIR", runs)
+    return runs
+
+
+def test_history_numbers_the_runs(tmp_path, monkeypatch):
+    _with_runs(tmp_path, monkeypatch, "first task", "second task")
+    command = parse("/history")
+    assert command is not None
+    reply = handle(command)
+    assert "1. second task" in reply  # most recent first
+    assert "2. first task" in reply
+    assert "/history <number>" in reply
+
+
+def test_history_reopens_a_numbered_run(tmp_path, monkeypatch):
+    _with_runs(tmp_path, monkeypatch, "first task", "second task")
+    command = parse("/history 2")
+    assert command is not None
+    reply = handle(command)
+    assert "the answer to first task" in reply
+
+
+def test_history_rejects_a_number_that_is_not_there(tmp_path, monkeypatch):
+    _with_runs(tmp_path, monkeypatch, "only task")
+    command = parse("/history 9")
+    assert command is not None
+    assert "no run 9" in handle(command)
+
+
+def test_last_reprints_the_newest_run(tmp_path, monkeypatch):
+    _with_runs(tmp_path, monkeypatch, "older", "newest")
+    command = parse("/last")
+    assert command is not None
+    assert "the answer to newest" in handle(command)
+
+
+def test_last_with_nothing_archived_says_so(tmp_path, monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "empty")
+    command = parse("/last")
+    assert command is not None
+    assert "Nothing archived yet" in handle(command)

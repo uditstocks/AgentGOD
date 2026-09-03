@@ -162,3 +162,22 @@ def test_trailing_time_words_survive():
 def test_intent_is_task_reports_itself():
     assert Intent.TASK.is_task
     assert not Intent.GREETING.is_task
+
+
+# --- acknowledgements: a nod must never bill a pipeline run --------------------
+
+
+@pytest.mark.parametrize(
+    "text", ["ok", "okay", "yes", "yep", "no", "hmm", "alright", "acha", "theek hai", "okkk"]
+)
+def test_bare_acknowledgements_are_not_work(text):
+    assert classify(text) is Intent.ACKNOWLEDGEMENT
+
+
+def test_an_acknowledgement_inside_an_instruction_stays_work():
+    assert classify("ok now write the summary in French") is Intent.TASK
+    assert classify("no code comments in the output please") is Intent.TASK
+
+
+def test_ok_thanks_is_still_thanks():
+    assert classify("ok thanks") is Intent.THANKS

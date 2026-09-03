@@ -144,49 +144,57 @@ def test_plain_is_chosen_when_rich_is_broken(monkeypatch):
 
 
 def test_plain_full_run_reads_like_a_transcript(capsys, tmp_path):
+    """Narration to stderr (stdout is not a tty here), the answer to stdout.
+
+    This split is the pipe contract: redirecting stdout captures the answer
+    and nothing else, while progress still reaches the person on stderr.
+    """
     saved = tmp_path / "runs" / "20260825_report.md"
     drive_full_run(PlainUI(), saved)
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out, err = captured.out, captured.err
 
-    assert "[1/5] Planning agents..." in out
-    assert "- research_agent: gather facts" in out
-    assert "writing research_agent..." in out
-    assert "wrote research_agent.py" in out
-    assert "reused summary_agent.py (from library, free)" in out
-    assert "refused (not on the allowlist): leftpad" in out
-    assert "installed: requests" in out
-    assert "repairing 1/2" in out
-    assert "done in 6.3s" in out
-    assert "! summary_agent failed: timed out after 300s" in out
+    assert "[1/5] Planning agents..." in err
+    assert "- research_agent: gather facts" in err
+    assert "writing research_agent..." in err
+    assert "wrote research_agent.py" in err
+    assert "reused summary_agent.py (from library, free)" in err
+    assert "refused (not on the allowlist): leftpad" in err
+    assert "installed: requests" in err
+    assert "repairing 1/2" in err
+    assert "research_agent done in 6.3s" in err
+    assert "! summary_agent failed: timed out after 300s" in err
     assert "ANSWER" in out
     assert "The answer." in out
-    assert "summary_agent: timed out after 300s" in out
-    assert "12.3s · 4 LLM calls" in out
-    assert "Saved to runs/20260825_report.md" in out
+    assert "summary_agent: timed out after 300s" in err
+    assert "12.3s · 4 LLM calls" in err
+    assert "20260825_report.md" in err
+    # The pipe contract itself: nothing but the answer block on stdout.
+    assert "Planning agents" not in out
 
 
 def test_plain_reports_a_lost_archive(capsys):
     PlainUI().run_succeeded(FakeResult(), None)
-    assert "(could not write the run archive)" in capsys.readouterr().out
+    assert "(could not write the run archive)" in capsys.readouterr().err
 
 
 def test_plain_failure_and_cancellation(capsys):
     surface = PlainUI()
     surface.run_failed(RuntimeError("every agent failed"))
     surface.run_cancelled()
-    out = capsys.readouterr().out
-    assert "Task failed: RuntimeError: every agent failed" in out
-    assert "Cancelled" in out
+    err = capsys.readouterr().err
+    assert "Task failed: RuntimeError: every agent failed" in err
+    assert "Cancelled" in err
 
 
 def test_plain_banner_covers_the_empty_state(capsys):
     surface = PlainUI()
     surface.banner("claude-sonnet-5", 4, 0, 0)
     surface.banner("claude-sonnet-5", 4, 7, 12)
-    out = capsys.readouterr().out
-    assert "library empty" in out
-    assert "runs none yet" in out
-    assert "library 7 kept" in out
+    err = capsys.readouterr().err
+    assert "library empty" in err
+    assert "runs none yet" in err
+    assert "library 7 kept" in err
 
 
 # --- the rich renderer: same events, no terminal, must not crash --------------
@@ -213,7 +221,8 @@ def test_rich_full_run_renders_answer_and_transcript(rich_surface, tmp_path):
     assert "A N S W E R" in out
     assert "The answer." in out
     assert "research_agent" in out
-    assert "20260825_report.md" in out
+    # The saved row is present; the path itself may be ellipsized by width.
+    assert "saved" in out
 
 
 def test_rich_failure_path_renders_a_panel(rich_surface):
@@ -239,7 +248,7 @@ def test_rich_cancellation_stops_the_live_display(rich_surface):
 def test_rich_events_degrade_when_no_run_was_started(rich_surface, capsys):
     surface, _ = rich_surface
     surface.phase_started(1, 5, "Planning agents")  # falls back to the plain line
-    assert "[1/5] Planning agents..." in capsys.readouterr().out
+    assert "[1/5] Planning agents..." in capsys.readouterr().err
 
 
 def test_rich_banner_and_help_render(rich_surface, monkeypatch):
@@ -249,7 +258,7 @@ def test_rich_banner_and_help_render(rich_surface, monkeypatch):
     surface.help()
     out = buffer.getvalue()
     assert "claude-sonnet-5" in out
-    assert "--task" in out
+    assert "--json" in out
 
 
 def test_rich_activity_spinner_is_cached_so_it_animates():
@@ -273,7 +282,7 @@ def test_plain_announces_only_genuine_parallelism(capsys):
     surface = PlainUI()
     surface.wave_started(1, 2, ["research_agent", "web_agent"])
     surface.wave_started(2, 2, ["summary_agent"])
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "research_agent + web_agent in parallel" in out
     assert "summary_agent" not in out  # a wave of one is just the next agent
 
@@ -283,7 +292,7 @@ def test_plain_narrates_the_council(capsys):
     surface.council_convened()
     surface.council_ruled(True, "1. cite the source")
     surface.council_ruled(False, "")
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "cross-examining" in out
     assert "cite the source" in out
     assert "nothing worth changing" in out
@@ -301,7 +310,7 @@ def test_plain_plan_names_the_grade_and_the_wiring(capsys):
         ],
     )
     PlainUI().plan_ready(plan)
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "graded deep" in out
     assert "(needs research_agent)" in out
 
@@ -309,7 +318,7 @@ def test_plain_plan_names_the_grade_and_the_wiring(capsys):
 def test_plain_run_summary_mentions_a_council_refinement(capsys):
     result = FakeResult(council_improved=True)
     PlainUI().run_succeeded(result, None)
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "council" in out.lower()
 
 
@@ -317,6 +326,73 @@ def test_a_plan_without_the_new_fields_still_renders(capsys):
     """Older callers and fakes carry no grade or wiring; display must not care."""
     bare: Any = fake_plan()
     PlainUI().plan_ready(bare)
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "research_agent" in out
     assert "graded" not in out
+
+
+# --- the stream contract: quiet mode, translated failures, the status line -----
+
+
+def test_quiet_mode_prints_the_answer_and_nothing_else(capsys):
+    surface = PlainUI(quiet=True)
+    surface.phase_started(1, 6, "Planning agents")
+    surface.run_succeeded(FakeResult(), None)
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "The answer."
+    assert "Planning" not in captured.out + captured.err
+
+
+def test_quiet_mode_never_silences_errors(capsys):
+    surface = PlainUI(quiet=True)
+    surface.warn("something is off")
+    surface.run_failed(RuntimeError("boom"))
+    err = capsys.readouterr().err
+    assert "something is off" in err
+    assert "boom" in err
+
+
+def test_a_translated_failure_leads_with_the_headline(capsys):
+    from problems import Problem
+
+    PlainUI().run_failed(
+        RuntimeError("Error code: 401 - {...}"),
+        Problem(
+            headline="Your API key was rejected.",
+            advice="Check ANTHROPIC_API_KEY in .env",
+            technical="Error code: 401",
+        ),
+    )
+    err = capsys.readouterr().err
+    assert "Your API key was rejected." in err
+    assert "Check ANTHROPIC_API_KEY" in err
+    assert err.index("rejected") < err.index("401")  # words first, detail last
+
+
+def test_status_prints_once_and_is_a_context_manager(capsys):
+    with PlainUI().status("sizing up the task..."):
+        pass
+    assert "sizing up the task..." in capsys.readouterr().err
+
+
+def test_attachment_announcements_survive_quiet(capsys):
+    """Reading a file sends it to a model provider; quiet must not hide that."""
+    PlainUI(quiet=True).attachments_read(["notes.md (1.2 KB)"])
+    assert "read notes.md" in capsys.readouterr().err
+
+
+def test_first_run_welcome_suggests_concrete_tasks(capsys):
+    PlainUI().first_run_welcome()
+    err = capsys.readouterr().err
+    assert "First run" in err
+    assert "write a 150-word brief" in err
+
+
+def test_display_path_prefers_relative(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from ui import display_path
+
+    monkeypatch.chdir(tmp_path)
+    inside = tmp_path / "runs" / "x.md"
+    assert display_path(inside) == str(Path("runs") / "x.md")

@@ -95,7 +95,7 @@ def test_upstream_names_are_listed_verbatim():
 
 
 def test_prompt_carries_the_upstream_contract():
-    prompt = generator.GENERATOR_PROMPT.format(
+    prompt = generator.GENERATOR_BRIEF.format(
         name="summary_agent",
         role="r",
         instructions="i",
@@ -103,6 +103,15 @@ def test_prompt_carries_the_upstream_contract():
         packages=generator._package_rule(AgentSpec(name="summary_agent", role="r", instructions="i")),
     )
     assert '"research_agent"' in prompt
+
+
+def test_the_static_policy_is_separate_from_the_per_agent_brief():
+    """The cached half must hold no per-agent text, or the cache never hits."""
+    policy = generator.GENERATOR_POLICY
+    assert "call_llm(" in policy  # the contract lives in the cached half
+    assert "REUSABLE" in policy
+    assert "{name}" not in policy and "{role}" not in policy
+    assert "{instructions}" not in policy and "{packages}" not in policy
 
 
 # --- an agent may import only what was actually installed for it ----------------

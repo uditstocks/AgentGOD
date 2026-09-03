@@ -24,3 +24,5 @@ CLI SS/
 Thumbs.db
 .idea/
 .vscode/
+TODO.md
+*.egg-info/

@@ -54,6 +54,13 @@ class TaskEvents:
     def agent_repairing(self, name: str, attempt: int, attempts: int, error: str) -> None:
         """A crashed agent is being regenerated from its own error output."""
 
+    def agent_retrying(self, name: str, reason: str) -> None:
+        """An agent hit an infrastructure error, so the same file runs again.
+
+        Distinct from repairing: the code was fine, the world was not, and
+        nothing is being rewritten or re-billed to fix it.
+        """
+
     def agent_unrepairable(self, name: str, reason: str) -> None:
         """Regeneration itself failed; the agent keeps its last error."""
 

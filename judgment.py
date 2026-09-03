@@ -102,8 +102,15 @@ def clarifying_question(task: str, usage: Usage | None = None) -> str | None:
     """
     if not task.strip():
         return None
+    # Low effort on purpose: this call sits between the user pressing Enter
+    # and anything appearing on screen, and its only job is a yes/no with a
+    # short question - the cheapest thinking the dial offers is plenty.
     result = complete_structured(
-        CLARIFY_PROMPT.format(task=task), Clarification, max_tokens=1000, usage=usage
+        CLARIFY_PROMPT.format(task=task),
+        Clarification,
+        max_tokens=1000,
+        usage=usage,
+        effort="low",
     )
     question = result.question.strip()
     return question or None

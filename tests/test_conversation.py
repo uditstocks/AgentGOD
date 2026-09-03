@@ -117,3 +117,30 @@ def test_clearing_reports_what_it_dropped():
     assert session.turns == []
     assert session.last is None
     assert session.clear() == 0
+
+
+# --- corrections and elaborations lean on the previous exchange ----------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "that's wrong",
+        "thats wrong",
+        "not what I asked for",
+        "you missed the risks section",
+        "you forgot the conclusion",
+        "tell me more",
+        "go deeper",
+        "keep going",
+        "more detail please",
+        "elaborate",
+    ],
+)
+def test_corrections_and_elaborations_are_follow_ups(text):
+    assert is_follow_up(text) is True
+
+
+def test_a_fresh_task_about_wrongness_stands_alone():
+    """'wrong' as subject matter is not a correction of anything."""
+    assert is_follow_up("write about what went wrong in the 2008 crisis") is False

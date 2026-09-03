@@ -76,3 +76,19 @@ def test_merge_still_folds_totals_in():
     extra.add(10, 5)
     total.merge(extra)
     assert (total.calls, total.input_tokens, total.output_tokens) == (1, 10, 5)
+
+
+# --- prompt caching: the static half travels as a cache breakpoint ---------------
+
+
+def test_cached_system_marks_an_ephemeral_breakpoint():
+    from config import cached_system
+
+    blocks = cached_system("the standing rules")
+    assert blocks == [
+        {
+            "type": "text",
+            "text": "the standing rules",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]

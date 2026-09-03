@@ -70,6 +70,10 @@ MAX_PARALLEL_AGENTS = max(1, _int_env("MAX_PARALLEL_AGENTS", 4))
 # tasks the planner graded deep; 'always' and 'off' do what they say.
 COUNCIL = os.getenv("COUNCIL", "auto").strip().lower()
 
+# Whether the one pre-run clarifying question may be asked at all. 'off'
+# skips the call entirely for people who always want the run to just start.
+CLARIFY = os.getenv("CLARIFY", "auto").strip().lower()
+
 # Hard wall-clock limit for one generated agent subprocess.
 AGENT_TIMEOUT_SECONDS = _int_env("AGENT_TIMEOUT_SECONDS", 300)
 
@@ -180,9 +184,21 @@ def web_search_tool() -> dict[str, Any]:
     }
 
 
+def cached_system(text: str) -> list[dict[str, Any]]:
+    """A system prompt the API may keep warm between calls.
+
+    The planner's rules and the generator's contract are identical on every
+    run - thousands of tokens re-sent and re-billed each time. Marking the
+    block as an ephemeral cache breakpoint means the second and later calls
+    read it from the provider's cache at a fraction of the price. Nothing
+    task-specific may go in here: the cache key is the text itself.
+    """
+    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+
+
 def complete(
     prompt: str,
-    system: str | None = None,
+    system: str | list[dict[str, Any]] | None = None,
     max_tokens: int | None = None,
     usage: Usage | None = None,
     search: bool = False,
@@ -232,7 +248,7 @@ _Schema = TypeVar("_Schema", bound=BaseModel)
 def complete_structured(
     prompt: str,
     output_format: type[_Schema],
-    system: str | None = None,
+    system: str | list[dict[str, Any]] | None = None,
     max_tokens: int | None = None,
     usage: Usage | None = None,
     effort: str | None = None,

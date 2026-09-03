@@ -1,5 +1,102 @@
 # Changelog
 
+## A real command line, and errors that speak English - 2026-09-03
+
+The engine was already good. This release is about everything around it: the
+way you invoke it, what it prints, where that print goes, and what it says
+when something breaks.
+
+### The command line is a contract now
+
+- New `cli.py`: a real argparse surface. A **positional task**
+  (`agentgod "write a haiku"`), `-` to read the task from stdin, `--version`,
+  `-q/--quiet`, `--json`, per-invocation `--model` / `--effort` /
+  `--council`, and `--keep` / `--discard` / `--no-input` for scripts.
+  `--task` keeps its old meaning - everything after it is task text, never a
+  flag - so a task may contain the word `--json` safely.
+- **Stable exit codes**: 0 succeeded, 1 failed, 2 bad usage, 130 interrupted.
+  A mistyped flag no longer falls into an interactive session a CI job would
+  hang on.
+- **Free verbs**: `agentgod library|stats|history|audit|forget|last` answer
+  from local disk and skip the API-key check entirely - asking for a
+  credential to list your own files was absurd. A slash command typed as a
+  one-shot task is routed to the same free handler instead of billing a
+  full pipeline run for it.
+- **Installable**: `pyproject.toml` gained a build system, dependencies and
+  `[project.scripts]`, so `pip install -e .[rich]` puts `agentgod` on the
+  PATH. `python main.py` still works identically.
+
+### The Unix stream contract
+
+- The **answer is stdout; everything else is not.** When stdout is not a
+  terminal, all narration moves to stderr, so `agentgod "..." > answer.md`
+  captures the answer and nothing else. Errors and warnings always go to
+  stderr and always survive `--quiet`.
+- `--json` emits one object: answer, complexity grade, per-agent outcome,
+  what was kept, failures, revisions, council verdict, cost breakdown,
+  duration, archive path.
+
+### Failures that a person can act on
+
+- New `problems.py` translates every failure into a headline plus a next
+  step: a rejected key names `ANTHROPIC_API_KEY`, `.env` and the console
+  URL; a rate limit says wait; an unknown model names the `MODEL` setting;
+  an every-agent-failed run reports the *shared* cause (all timed out, all
+  refused) rather than four copies of it. The raw SDK text is kept, dimmed,
+  underneath - never the headline.
+- **The key is checked before it can waste a run**: the shape check now
+  applies to keys loaded from `.env` too (a hand-edited junk value used to
+  sail through preflight and die mid-run as a raw 401). Pasting a key is
+  hidden with `getpass`, verified against the API, and a slip re-prompts up
+  to three times instead of exiting the process.
+- **A paid answer is never thrown away.** If the council or the judge
+  crashes after the merge, the answer is delivered with a visible
+  "delivered unchecked" caveat instead of the whole task being reported as
+  failed.
+
+### Less waiting, less spend
+
+- The pre-run clarifying question now runs at `low` effort behind a live
+  status spinner, is skipped for follow-ups (the previous exchange *is* the
+  disambiguation), and can be turned off with `CLARIFY=off`. The seconds of
+  dead silence after the first Enter are gone.
+- **A single-agent run no longer pays a merge call** to restate its own
+  answer; the judge still reads it back.
+- **A judged miss is closed cheaply first**: one re-merge with the gap named,
+  and only if that still falls short does the whole team run again.
+- **Infrastructure failures stop being treated as code bugs.** A 429 or a
+  timeout no longer burns codegen calls rewriting working code: a transient
+  error re-runs the same file once, and anything else environmental stops
+  with an honest "not a code problem" note.
+- The planner's rules and the generator's contract now travel as **cached
+  system blocks**, so repeat runs re-read them at cache price.
+- Ctrl-C during a wave cancels queued agents immediately instead of draining
+  the pool, and says plainly that a call already in flight will still bill.
+
+### The conversation, and the things you already paid for
+
+- Bare acknowledgements ("ok", "yes", "hmm", "acha") are answered for free
+  instead of planning a five-phase run. Corrections ("that's wrong", "you
+  missed the risks") and elaborations ("tell me more", "go deeper") are
+  recognised as follow-ups and carry the previous exchange with them.
+- **Pasting a paragraph is one task**, not one billed run per line with the
+  leftovers answering the keep prompt.
+- The keep prompt accepts `y/n`, shows its default, and takes `always` -
+  which persists to `.env` so it never asks again. Headless runs keep by
+  default; `--keep` / `--discard` / `AGENTGOD_KEEP` make it explicit.
+- **`/last`** reprints the newest archived answer and **`/history`** is
+  numbered, so `/history 3` reopens that run. The archive itself now records
+  why a run cost what it did: grade, reuse, council, revisions, caveats.
+- Contextual hints teach follow-ups after the first answer and `/library`
+  after the first keep; `identity.py` no longer claims agents never run in
+  parallel.
+
+### Proof
+
+- 599 tests (was 526), ruff clean, pyright 0 errors. New suites for the CLI
+  contract, the failure translator, the stream split, the paste burst, the
+  cheap-revision path and the environmental-failure rules.
+
 ## It thinks in graphs, spends effort where it matters, and argues with itself - 2026-08-31
 
 The plan is no longer a queue, the effort is no longer flat, and the answer

@@ -307,8 +307,12 @@ exists is free; a new name costs a full code-generation call. So:
   Write "gather facts about the subject of the task", not "research electric
   scooters". A subject-specific agent can never be reused and costs full price
   every time.
+"""
 
-User task:
+# The task itself, sent as the message. Everything above is standing policy
+# and goes in a cached system block, so a second run re-reads it at cache
+# price instead of paying full input tokens for the same rules again.
+TASK_PROMPT = """User task:
 {task}
 """
 
@@ -319,19 +323,22 @@ def plan_agents(task: str, usage: Usage | None = None) -> Plan:
     The reply is constrained to the Plan schema by the API itself, so a
     malformed plan is a request error rather than something to salvage here.
     """
+    from config import cached_system
     from library import describe_for_planner
 
+    # The rules, the vetted packages and the library catalogue are identical
+    # between runs, so they travel as a cached system block; only the task
+    # itself is new input.
+    policy = PLANNER_PROMPT.format(
+        max_agents=MAX_AGENTS,
+        library=describe_for_planner(),
+        standard="\n".join(f"  - {name} - {role}" for name, role in STANDARD_AGENTS.items()),
+        packages=_wrap("  ", sorted(ALLOWED_PACKAGES)),
+    )
     return complete_structured(
-        PLANNER_PROMPT.format(
-            task=task,
-            max_agents=MAX_AGENTS,
-            library=describe_for_planner(),
-            standard="\n".join(
-                f"  - {name} - {role}" for name, role in STANDARD_AGENTS.items()
-            ),
-            packages=_wrap("  ", sorted(ALLOWED_PACKAGES)),
-        ),
+        TASK_PROMPT.format(task=task),
         Plan,
+        system=cached_system(policy),
         usage=usage,
     )
 

@@ -41,6 +41,8 @@ from executor import (
     DependencyReport,
     execute_agent,
     install_dependencies,
+    is_environmental,
+    is_transient,
     save_agent_file,
 )
 from generator import generate_agent_code
@@ -94,6 +96,9 @@ class TaskResult:
     revisions: int = 0
     # Whether the council found real faults and the answer was refined.
     council_improved: bool = False
+    # Set when the post-merge quality gates (council, judge) crashed: the
+    # answer was still delivered, and this says what it was not checked by.
+    caveat: str = ""
     pending: dict[str, tuple[str, str]] = field(default_factory=dict)
     dependencies: DependencyReport = field(default_factory=DependencyReport)
     duration_seconds: float = 0.0
@@ -157,10 +162,19 @@ def _for_each_in_waves(
                 absorb(spec, run_one(spec))
             continue
         workers = min(len(wave_specs), MAX_PARALLEL_AGENTS)
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
             futures = {pool.submit(run_one, spec): spec for spec in wave_specs}
             for future in as_completed(futures):
                 absorb(futures[future], future.result())
+        except BaseException:
+            # Ctrl-C must not wait for a whole wave to drain. Queued agents
+            # are cancelled outright; the ones already running finish on
+            # their own, which is what run_cancelled tells the user.
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            pool.shutdown(wait=True)
 
 
 def _run_with_repair(
@@ -181,6 +195,23 @@ def _run_with_repair(
     """
     repaired: str | None = None
     result = execute_agent(path, task, outputs, effort=effort)
+
+    # An environmental failure is not a code bug: regenerating working code
+    # because the API returned 429 bills two generation calls to fix nothing.
+    # A transient error earns one plain re-run of the same file; anything
+    # else environmental (timeout, missing key) would fail identically, so
+    # the honest move is to stop and say why no repair was attempted.
+    if not result.ok and is_environmental(result.error):
+        if is_transient(result.error):
+            events.agent_retrying(spec.name, result.error)
+            time.sleep(2)
+            result = execute_agent(path, task, outputs, effort=effort)
+        if not result.ok and is_environmental(result.error):
+            events.agent_unrepairable(
+                spec.name, f"not a code problem - {result.error.splitlines()[0][:120]}"
+            )
+            return result, repaired
+
     for attempt in range(1, AGENT_REPAIR_ATTEMPTS + 1):
         if result.ok:
             break
@@ -243,6 +274,7 @@ def _finish_answer(
     response: str,
     plan: Plan,
     agent_paths: list[Path],
+    first_outputs: dict[str, str],
     usage: Usage,
     events: TaskEvents,
     effort: str | None,
@@ -253,9 +285,13 @@ def _finish_answer(
     ends wherever the merger happened to stop - a 200-word brief answered in
     600 words was simply delivered, because nothing ever compared the two.
 
-    Bounded by TASK_REVISIONS because each attempt re-runs every agent and is
-    billed like the first one. A revision that produces nothing usable leaves
-    the original answer standing rather than replacing it with worse.
+    A miss is closed in two tiers. Most misses are the merger's, not the
+    agents' - a word count ignored, a section dropped - and the material to
+    fix them is already in `first_outputs`, so the first attempt is one
+    re-merge with the gap named. Only when that still falls short does the
+    whole team run again, which is billed like the first round. A revision
+    that produces nothing usable leaves the original answer standing rather
+    than replacing it with worse.
     """
     extra_results: list[AgentResult] = []
     revisions = 0
@@ -266,6 +302,22 @@ def _finish_answer(
             break
 
         events.revision_started(attempt, TASK_REVISIONS, verdict.missing)
+
+        # Tier 1: the agents' material was fine - re-merge it against the gap.
+        if first_outputs:
+            events.merge_started(len(first_outputs))
+            candidate = merge_outputs(
+                revision_task(task, verdict.missing), first_outputs,
+                usage=usage, effort=effort,
+            )
+            remedied = judge(task, candidate, usage=usage, effort=effort)
+            events.answer_judged(remedied.done, remedied.missing)
+            if remedied.done and candidate:
+                response = candidate
+                revisions = attempt
+                continue
+
+        # Tier 2: the material itself fell short - run the team again on the gap.
         outputs, results = _rerun_agents(
             plan, agent_paths, revision_task(task, verdict.missing), events, effort
         )
@@ -383,10 +435,16 @@ def handle_task(
                 sources[spec.name] = generate(spec)
         else:
             workers = min(len(to_build), MAX_PARALLEL_AGENTS)
-            with ThreadPoolExecutor(max_workers=workers) as pool:
+            pool = ThreadPoolExecutor(max_workers=workers)
+            try:
                 futures = {spec.name: pool.submit(generate, spec) for spec in to_build}
-            for spec in to_build:
-                sources[spec.name] = futures[spec.name].result()
+                for spec in to_build:
+                    sources[spec.name] = futures[spec.name].result()
+            except BaseException:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            else:
+                pool.shutdown(wait=True)
 
         for spec in to_build:
             built.append(spec.name)
@@ -462,26 +520,45 @@ def handle_task(
             "every agent failed:\n"
             + "\n".join(f"  - {name}: {error}" for name, error in failures.items())
         )
-    events.merge_started(len(outputs))
-    response = merge_outputs(task, outputs, usage=usage, effort=effort)
+    if len(outputs) == 1 and not failures:
+        # One agent, one voice: a merge call would re-bill the whole answer's
+        # output tokens to restate it. The agent already held the task and
+        # its constraints, and the judge below still reads the result back.
+        response = next(iter(outputs.values())).strip()
+    else:
+        events.merge_started(len(outputs))
+        response = merge_outputs(task, outputs, usage=usage, effort=effort)
     spend()
 
     events.phase_started(6, len(PHASES), PHASES[5])
     council_improved = False
-    if should_convene(plan.complexity):
-        # The adversarial reading, before compliance is even checked: the
-        # judge catches a missed demand, the council catches a weak answer.
-        events.council_convened()
-        response, council_improved, weaknesses = deliberate(
-            task, response, usage=usage, effort=effort
-        )
-        events.council_ruled(council_improved, weaknesses)
-        spend()
+    revisions = 0
+    caveat = ""
+    try:
+        if should_convene(plan.complexity):
+            # The adversarial reading, before compliance is even checked: the
+            # judge catches a missed demand, the council catches a weak answer.
+            events.council_convened()
+            response, council_improved, weaknesses = deliberate(
+                task, response, usage=usage, effort=effort
+            )
+            events.council_ruled(council_improved, weaknesses)
+            spend()
 
-    response, extra_results, revisions = _finish_answer(
-        task, response, plan, agent_paths, usage, events, effort
-    )
-    results.extend(extra_results)
+        response, extra_results, revisions = _finish_answer(
+            task, response, plan, agent_paths, outputs, usage, events, effort
+        )
+        results.extend(extra_results)
+    except KeyboardInterrupt:
+        raise
+    except Exception as error:
+        # The answer above was paid for by every agent in the run. Its own
+        # quality gates crashing must never throw it away - deliver it, and
+        # say plainly what it was not checked by.
+        caveat = (
+            "delivered unchecked - the answer's quality checks failed: "
+            + (str(error).strip().splitlines()[0] if str(error).strip() else type(error).__name__)[:160]
+        )
     spend()
 
     return TaskResult(
@@ -491,6 +568,7 @@ def handle_task(
         complexity=plan.complexity,
         revisions=revisions,
         council_improved=council_improved,
+        caveat=caveat,
         reused=reused,
         built=built,
         pending=pending,

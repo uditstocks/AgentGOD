@@ -356,7 +356,29 @@ class RichUI(PlainUI):
 
     def hint(self) -> None:
         self.console.print(
-            Text("  describe a task and press enter · 'quit' leaves", style="dim")
+            Text(
+                "  describe a task and press enter · /help commands · /paste multi-line"
+                " · 'quit' leaves",
+                style="dim",
+            )
+        )
+
+    def first_run_welcome(self) -> None:
+        c = self.console
+        c.print()
+        c.print(Text("  first run - try something with a shape to it:", style="label"))
+        c.print(Text("    write a 150-word brief on why small teams ship faster", style="dim"))
+        c.print(
+            Text(
+                "    compare Postgres and SQLite for a small web app, end with a pick",
+                style="dim",
+            )
+        )
+
+    def status(self, message: str):
+        """A live spinner for the wait before the board exists."""
+        return self.console.status(
+            Text(f" {message}", style="dim"), spinner=self.glyphs["spinner"]
         )
 
     def help(self) -> None:
@@ -501,6 +523,8 @@ class RichUI(PlainUI):
                 "failed agents were excluded from the answer", style="warn"
             )
             summary.add_row("", "", excluded)
+        if getattr(result, "caveat", ""):
+            summary.add_row("", "caveat", Text(result.caveat, style="warn"))
         if getattr(result, "council_improved", False):
             summary.add_row(
                 "", "council",
@@ -512,7 +536,9 @@ class RichUI(PlainUI):
             stats += f" · graded {complexity}"
         summary.add_row("", "run", Text(stats, style="dim"))
         if saved is not None:
-            summary.add_row("", "saved", Text(f"{saved.parent.name}/{saved.name}", style="dim"))
+            from ui import display_path
+
+            summary.add_row("", "saved", Text(display_path(saved), style="dim"))
         else:
             summary.add_row("", "saved", Text("the run archive could not be written", style="warn"))
         c.print(summary)
@@ -523,28 +549,50 @@ class RichUI(PlainUI):
         self.console.print(
             Text("  interrupted - this run is abandoned; nothing was kept", style="warn")
         )
+        self.console.print(
+            Text("  a model call already in flight will finish and still be billed", style="dim")
+        )
 
-    def run_failed(self, error: BaseException) -> None:
+    def run_failed(self, error: BaseException, problem=None) -> None:
         self._stop_live()
         c = self.console
-        message = str(error).strip() or type(error).__name__
-        lines = message.splitlines()
-        if len(lines) > 14:
-            lines = [*lines[:14], f"... {len(lines) - 14} more lines"]
-        c.print()
-        c.print(
-            Panel(
-                Text("\n".join(lines)),
-                title=Text(f" {type(error).__name__} ", style="err"),
-                title_align="left",
-                border_style="err",
-                padding=(1, 3),
+        if problem is not None:
+            # The translated failure: what happened, what to do, and only
+            # then the raw detail - dimmed, for whoever wants it.
+            body = Text()
+            body.append(problem.advice)
+            if problem.technical:
+                body.append("\n\n")
+                body.append(f"detail: {problem.technical}", style="dim")
+            c.print()
+            c.print(
+                Panel(
+                    body,
+                    title=Text(f" {problem.headline} ", style="err"),
+                    title_align="left",
+                    border_style="err",
+                    padding=(1, 3),
+                )
             )
-        )
+        else:
+            message = str(error).strip() or type(error).__name__
+            lines = message.splitlines()
+            if len(lines) > 14:
+                lines = [*lines[:14], f"... {len(lines) - 14} more lines"]
+            c.print()
+            c.print(
+                Panel(
+                    Text("\n".join(lines)),
+                    title=Text(f" {type(error).__name__} ", style="err"),
+                    title_align="left",
+                    border_style="err",
+                    padding=(1, 3),
+                )
+            )
         board = self._board
         if board is not None and board.rows:
             c.print(Padding(board.team_transcript(), (0, 0, 0, 2)))
-        c.print(Text("  nothing was kept · fix the cause above, then run the task again", style="dim"))
+        c.print(Text("  nothing was kept from this run", style="dim"))
 
     def run_ended(self) -> None:
         self._stop_live()

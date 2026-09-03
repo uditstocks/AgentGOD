@@ -307,7 +307,11 @@ def test_a_short_answer_is_rejected_and_the_agents_run_again(collaborators):
 
 
 def test_the_revision_reruns_the_agents_on_the_gap_not_on_the_critique(collaborators):
-    """Replacing the task with the complaint is how a second attempt drifts."""
+    """Replacing the task with the complaint is how a second attempt drifts.
+
+    Three verdicts: the answer misses, the cheap re-merge still misses, and
+    only then does the team run again - on the original wording plus the gap.
+    """
     seen: list[str] = []
 
     def spy(path, task, outputs, python_exe=None, effort=None):
@@ -316,7 +320,11 @@ def test_the_revision_reruns_the_agents_on_the_gap_not_on_the_critique(collabora
 
     collaborators.setattr(orchestrator, "execute_agent", spy)
     verdicts = iter(
-        [Verdict(missing="no sources were cited", done=False), Verdict(missing="", done=True)]
+        [
+            Verdict(missing="no sources were cited", done=False),
+            Verdict(missing="no sources were cited", done=False),  # tier-1 re-merge judged
+            Verdict(missing="", done=True),
+        ]
     )
     collaborators.setattr(
         orchestrator, "judge", lambda task, answer, usage=None, effort=None: next(verdicts)
@@ -327,6 +335,181 @@ def test_the_revision_reruns_the_agents_on_the_gap_not_on_the_critique(collabora
     revised = seen[-1]
     assert "write about logging" in revised  # the original request survives
     assert "no sources were cited" in revised  # and the gap is added to it
+
+
+def test_a_judgment_miss_is_first_closed_by_a_cheap_remerge(collaborators):
+    """Most misses are the merger's - one re-merge, no team rerun, no re-billing."""
+    executions = {"n": 0}
+
+    def counting(path, task, outputs, python_exe=None, effort=None):
+        executions["n"] += 1
+        return ok_result(path)
+
+    collaborators.setattr(orchestrator, "execute_agent", counting)
+    verdicts = iter(
+        [Verdict(missing="the 200-word limit was ignored", done=False),
+         Verdict(missing="", done=True)]
+    )
+    collaborators.setattr(
+        orchestrator, "judge", lambda task, answer, usage=None, effort=None: next(verdicts)
+    )
+    merges = iter(["first draft", "the trimmed answer"])
+    collaborators.setattr(
+        orchestrator,
+        "merge_outputs",
+        lambda task, outputs, usage=None, effort=None: next(merges),
+    )
+
+    result = orchestrator.handle_task("write 200 words", events=Recorder())
+
+    assert result.response == "the trimmed answer"
+    assert result.revisions == 1
+    assert executions["n"] == 2  # the first round only - nothing was rerun
+
+
+# --- the paid answer survives its own quality gates -----------------------------
+
+
+def test_a_crashing_judge_still_delivers_the_merged_answer(collaborators):
+    def explode(task, answer, usage=None, effort=None):
+        raise RuntimeError("judge lost its connection")
+
+    collaborators.setattr(orchestrator, "judge", explode)
+    result = orchestrator.handle_task("do a thing", events=Recorder())
+
+    assert result.response == "the answer"
+    assert "delivered unchecked" in result.caveat
+    assert "judge lost its connection" in result.caveat
+
+
+def test_a_crashing_council_still_delivers_the_merged_answer(collaborators, monkeypatch):
+    monkeypatch.setattr(orchestrator, "should_convene", lambda complexity: True)
+
+    def explode(task, answer, usage=None, effort=None):
+        raise RuntimeError("council unavailable")
+
+    monkeypatch.setattr(orchestrator, "deliberate", explode)
+    result = orchestrator.handle_task("analyse deeply", events=Recorder())
+
+    assert result.response == "the answer"
+    assert "delivered unchecked" in result.caveat
+    assert not result.council_improved
+
+
+# --- single-agent runs stop paying to restate their own answer ------------------
+
+
+def one_agent_plan() -> Plan:
+    return Plan(
+        agents=[AgentSpec(name="writer_agent", role="write", instructions="write it")],
+        reasoning="one agent suffices",
+    )
+
+
+def test_a_single_agent_answer_skips_the_merge_call(collaborators, monkeypatch):
+    monkeypatch.setattr(orchestrator, "plan_agents", lambda task, usage=None: one_agent_plan())
+
+    def explode(task, outputs, usage=None, effort=None):  # pragma: no cover
+        raise AssertionError("one clean output must not be re-billed through a merge")
+
+    monkeypatch.setattr(orchestrator, "merge_outputs", explode)
+    judged: list[str] = []
+    monkeypatch.setattr(
+        orchestrator,
+        "judge",
+        lambda task, answer, usage=None, effort=None: judged.append(answer)
+        or Verdict(missing="", done=True),
+    )
+
+    result = orchestrator.handle_task("write a haiku", events=Recorder())
+
+    assert result.response == "output of writer_agent"
+    assert judged == ["output of writer_agent"]  # still checked, just not re-merged
+
+
+def test_a_lone_survivor_among_failures_is_still_merged(collaborators, monkeypatch):
+    """With failures, the merge is what weaves survival into an honest answer."""
+
+    def one_fails(path, task, outputs, python_exe=None, effort=None):
+        return failed_result(path) if path.stem == "summary_agent" else ok_result(path)
+
+    monkeypatch.setattr(orchestrator, "execute_agent", one_fails)
+    merged = {"n": 0}
+
+    def counting_merge(task, outputs, usage=None, effort=None):
+        merged["n"] += 1
+        return "the woven answer"
+
+    monkeypatch.setattr(orchestrator, "merge_outputs", counting_merge)
+
+    result = orchestrator.handle_task("do a thing", events=Recorder())
+
+    assert merged["n"] == 1
+    assert result.response == "the woven answer"
+
+
+# --- infrastructure failures are not code bugs ----------------------------------
+
+
+class RetryRecorder(Recorder):
+    def agent_retrying(self, name, reason):
+        self.log.append(("retry", name))
+
+
+def test_a_transient_api_error_reruns_the_same_file_without_regenerating(
+    collaborators, monkeypatch
+):
+    monkeypatch.setattr(orchestrator.time, "sleep", lambda seconds: None)
+    attempts: dict[str, int] = {}
+
+    def flaky(path, task, outputs, python_exe=None, effort=None):
+        attempts[path.stem] = attempts.get(path.stem, 0) + 1
+        if path.stem == "research_agent" and attempts[path.stem] == 1:
+            return AgentResult(
+                name=path.stem, path=path, ok=False,
+                error="API request failed: HTTP 429 Too Many Requests",
+            )
+        return ok_result(path)
+
+    monkeypatch.setattr(orchestrator, "execute_agent", flaky)
+
+    def explode(*args, **kwargs):  # pragma: no cover - must never run
+        raise AssertionError("a 429 must not trigger code regeneration")
+
+    monkeypatch.setattr(orchestrator, "generate_agent_code", explode)
+    # generation is needed for the build phase, so re-allow it there only
+    monkeypatch.setattr(
+        orchestrator,
+        "generate_agent_code",
+        lambda spec, upstream=None, feedback=None, usage=None, task="", effort=None: SOURCE,
+    )
+
+    recorder = RetryRecorder()
+    result = orchestrator.handle_task("do a thing", events=recorder)
+
+    assert result.failures == {}
+    assert attempts["research_agent"] == 2
+    assert ("retry", "research_agent") in recorder.log
+    assert "repair" not in recorder.kinds()
+
+
+def test_a_timeout_is_reported_as_not_a_code_problem_and_never_repaired(
+    collaborators, monkeypatch
+):
+    def times_out(path, task, outputs, python_exe=None, effort=None):
+        if path.stem == "research_agent":
+            return AgentResult(
+                name=path.stem, path=path, ok=False, error="timed out after 300s"
+            )
+        return ok_result(path)
+
+    monkeypatch.setattr(orchestrator, "execute_agent", times_out)
+    recorder = Recorder()
+    result = orchestrator.handle_task("do a thing", events=recorder)
+
+    assert "research_agent" in result.failures
+    assert ("unrepairable", "research_agent") in recorder.log
+    assert "repair" not in recorder.kinds()
 
 
 def test_a_revision_that_produces_nothing_keeps_the_first_answer(collaborators):
