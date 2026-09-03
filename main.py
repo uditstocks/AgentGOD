@@ -770,6 +770,10 @@ def _json_payload(task: str, outcome: Outcome) -> dict:
             + getattr(result, "agent_input_tokens", 0),
             "output_tokens": (usage.output_tokens if usage else 0)
             + getattr(result, "agent_output_tokens", 0),
+            # Cached input is billed separately and is not part of input_tokens;
+            # reporting it is what makes the number above add up.
+            "cache_write_tokens": getattr(usage, "cache_write_tokens", 0) if usage else 0,
+            "cache_read_tokens": getattr(usage, "cache_read_tokens", 0) if usage else 0,
             "usd": round(agent_cost + main_cost, 6) if main_cost is not None else None,
         },
         "duration_seconds": round(getattr(result, "duration_seconds", 0.0), 2),

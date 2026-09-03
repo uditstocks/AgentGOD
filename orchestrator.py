@@ -33,6 +33,7 @@ from config import (
     TASK_REVISIONS,
     Usage,
     effort_for,
+    model_for,
 )
 from council import deliberate, should_convene
 from events import TaskEvents
@@ -46,7 +47,7 @@ from executor import (
     save_agent_file,
 )
 from generator import generate_agent_code
-from judgment import judge, revision_task
+from judgment import judge, revision_task, should_judge
 from library import (
     forget,
     lookup,
@@ -111,7 +112,17 @@ class TaskResult:
         tokens_in = self.usage.input_tokens + self.agent_input_tokens
         tokens_out = self.usage.output_tokens + self.agent_output_tokens
         money = f" · ~${total_cost:.4f}" if total_cost else ""
-        return f"{calls} LLM calls · {tokens_in:,} in / {tokens_out:,} out tokens{money}"
+        # Cached input is the cheapest thing in the run and the least visible;
+        # naming it is what shows the library and the prompt cache paying off.
+        cached = (
+            f" · {self.usage.cache_read_tokens:,} cached"
+            if self.usage.cache_read_tokens
+            else ""
+        )
+        return (
+            f"{calls} LLM calls · {tokens_in:,} in / {tokens_out:,} out tokens"
+            f"{cached}{money}"
+        )
 
 
 class _SharedEvents:
@@ -187,6 +198,7 @@ def _run_with_repair(
     events: TaskEvents,
     subject: str,
     effort: str | None,
+    model: str | None,
 ) -> tuple[AgentResult, str | None]:
     """Execute one agent, regenerating it from its own error output on failure.
 
@@ -194,7 +206,7 @@ def _run_with_repair(
     is a repairable event rather than lost work.
     """
     repaired: str | None = None
-    result = execute_agent(path, task, outputs, effort=effort)
+    result = execute_agent(path, task, outputs, effort=effort, model=model)
 
     # An environmental failure is not a code bug: regenerating working code
     # because the API returned 429 bills two generation calls to fix nothing.
@@ -205,7 +217,7 @@ def _run_with_repair(
         if is_transient(result.error):
             events.agent_retrying(spec.name, result.error)
             time.sleep(2)
-            result = execute_agent(path, task, outputs, effort=effort)
+            result = execute_agent(path, task, outputs, effort=effort, model=model)
         if not result.ok and is_environmental(result.error):
             events.agent_unrepairable(
                 spec.name, f"not a code problem - {result.error.splitlines()[0][:120]}"
@@ -219,13 +231,13 @@ def _run_with_repair(
         try:
             code = generate_agent_code(
                 spec, upstream, feedback=result.error, usage=usage, task=subject,
-                effort=effort,
+                effort=effort, model=model,
             )
         except (ValueError, RuntimeError) as error:
             events.agent_unrepairable(spec.name, str(error))
             break
         path = save_agent_file(spec, code)
-        result = execute_agent(path, task, outputs, effort=effort)
+        result = execute_agent(path, task, outputs, effort=effort, model=model)
         if result.ok:
             repaired = code
     return result, repaired
@@ -237,6 +249,7 @@ def _rerun_agents(
     task: str,
     events: TaskEvents,
     effort: str | None,
+    model: str | None,
 ) -> tuple[dict[str, str], list[AgentResult]]:
     """Run every agent again on a revised task, in the same waves as before.
 
@@ -257,7 +270,9 @@ def _rerun_agents(
         events.agent_started(spec.name, index_of[spec.name], total)
         upstream = dependency_closure(plan.agents, spec.name)
         visible = {name: outputs[name] for name in upstream if name in outputs}
-        return execute_agent(path_by_name[spec.name], task, visible, effort=effort)
+        return execute_agent(
+            path_by_name[spec.name], task, visible, effort=effort, model=model
+        )
 
     def absorb(spec: AgentSpec, result: AgentResult) -> None:
         results.append(result)
@@ -278,6 +293,7 @@ def _finish_answer(
     usage: Usage,
     events: TaskEvents,
     effort: str | None,
+    model: str | None,
 ) -> tuple[str, list[AgentResult], int]:
     """Read the answer back against the request, and try again if it falls short.
 
@@ -308,7 +324,7 @@ def _finish_answer(
             events.merge_started(len(first_outputs))
             candidate = merge_outputs(
                 revision_task(task, verdict.missing), first_outputs,
-                usage=usage, effort=effort,
+                usage=usage, effort=effort, model=model,
             )
             remedied = judge(task, candidate, usage=usage, effort=effort)
             events.answer_judged(remedied.done, remedied.missing)
@@ -319,13 +335,13 @@ def _finish_answer(
 
         # Tier 2: the material itself fell short - run the team again on the gap.
         outputs, results = _rerun_agents(
-            plan, agent_paths, revision_task(task, verdict.missing), events, effort
+            plan, agent_paths, revision_task(task, verdict.missing), events, effort, model
         )
         extra_results.extend(results)
         if not outputs:
             break
         events.merge_started(len(outputs))
-        response = merge_outputs(task, outputs, usage=usage, effort=effort)
+        response = merge_outputs(task, outputs, usage=usage, effort=effort, model=model)
         revisions = attempt
 
     return response, extra_results, revisions
@@ -375,6 +391,10 @@ def handle_task(
     # The grade the planner just gave sets the effort of every call below -
     # the generated agents' own calls included, via their environment.
     effort = effort_for(plan.complexity)
+    # The same grade that sets how hard the model works also chooses WHICH
+    # model does the work: mechanical checks stay cheap, and only a task the
+    # planner called deep is allowed to reach for the deep model.
+    model = model_for("run", plan.complexity)
     spend()
 
     events.phase_started(2, len(PHASES), PHASES[1])
@@ -425,6 +445,7 @@ def handle_task(
                 usage=usage,
                 task=subject,
                 effort=effort,
+                model=model,
             )
 
         # Each agent's code depends on nothing another generation call will
@@ -481,7 +502,7 @@ def handle_task(
         visible = {name: outputs[name] for name in upstream if name in outputs}
         return _run_with_repair(
             spec, path_by_name[spec.name], task, visible, upstream, usage,
-            events, subject, effort,
+            events, subject, effort, model,
         )
 
     def absorb(spec: AgentSpec, outcome: tuple[AgentResult, str | None]) -> None:
@@ -527,7 +548,7 @@ def handle_task(
         response = next(iter(outputs.values())).strip()
     else:
         events.merge_started(len(outputs))
-        response = merge_outputs(task, outputs, usage=usage, effort=effort)
+        response = merge_outputs(task, outputs, usage=usage, effort=effort, model=model)
     spend()
 
     events.phase_started(6, len(PHASES), PHASES[5])
@@ -545,10 +566,11 @@ def handle_task(
             events.council_ruled(council_improved, weaknesses)
             spend()
 
-        response, extra_results, revisions = _finish_answer(
-            task, response, plan, agent_paths, outputs, usage, events, effort
-        )
-        results.extend(extra_results)
+        if should_judge(plan.complexity, task):
+            response, extra_results, revisions = _finish_answer(
+                task, response, plan, agent_paths, outputs, usage, events, effort, model
+            )
+            results.extend(extra_results)
     except KeyboardInterrupt:
         raise
     except Exception as error:

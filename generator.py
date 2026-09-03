@@ -284,6 +284,21 @@ def constraints(task):
 def word_count(text):
     """How many words a draft actually has, for checking a stated limit."""
     return len(str(text).split())
+
+
+def deep():
+    """Whether this run is worth a second model call to polish the draft.
+
+    A refinement pass doubles this agent's output tokens - the expensive
+    kind - so it is spent only where the answer is worth it. The main agent
+    grades every task and sets the effort dial accordingly, which arrives
+    here in the environment: a translation or a one-liner comes back in one
+    call, a deep analysis earns the second one.
+
+    Deciding at runtime rather than at generation time is what keeps this
+    file reusable: the same agent serves a cheap task and an expensive one.
+    """
+    return EFFORT in ("high", "xhigh", "max")
 '''
 
 # The divider that separates the trusted runtime from the generated logic, so
@@ -336,6 +351,7 @@ write an "if __name__" block:
     chunk(text, size=...) -> list[str]            # split long material
     constraints(task) -> list[str]                # length/format demands in the task
     word_count(text) -> int                       # for checking a stated limit
+    deep() -> bool                                # is this run worth a second call?
 
 BUILD A REAL SPECIALIST, NOT A ONE-LINE WRAPPER.
 
@@ -355,9 +371,17 @@ BUILD A REAL SPECIALIST, NOT A ONE-LINE WRAPPER.
    so in the prompt and work from what is there rather than pretending.
 5. Handle long material. If the material is longer than one call can hold,
    use chunk() and process the pieces, then combine - never silently truncate.
-6. Where quality genuinely benefits (writing, analysis, code), draft and then
-   make ONE improvement pass over the draft against the task's constraints.
-   Do not do this for simple extraction or translation; two calls cost twice.
+6. ONE model call is the default. A second call doubles what this agent
+   costs, so spend it only where the answer is genuinely worth it AND the
+   run has been graded as deserving it:
+
+       draft = call_llm(...)
+       if deep():
+           draft = call_llm(<improve the draft against the task's constraints>)
+       return draft
+
+   Never refine unconditionally, and never refine simple extraction or
+   translation at all. `deep()` is already defined - do not redefine it.
 7. Return clean final text: no preamble, no "Here is", no meta-commentary.
 
 REUSABLE - the rule this agent is rejected for breaking:
@@ -512,6 +536,7 @@ def generate_agent_code(
     usage: Usage | None = None,
     task: str = "",
     effort: str | None = None,
+    model: str | None = None,
 ) -> str:
     """Return validated, ready-to-run source for one agent.
 
@@ -551,6 +576,7 @@ def generate_agent_code(
             max_tokens=8000,
             usage=usage,
             effort=effort,
+            model=model,
         )
         body = _strip_code_fences(reply).strip()
         source = assemble_agent(body, spec)

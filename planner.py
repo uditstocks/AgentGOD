@@ -298,9 +298,8 @@ Rules:
 
 REUSE COMES FIRST. Agents are written once and kept. An agent whose name already
 exists is free; a new name costs a full code-generation call. So:
-- These agents are ALREADY BUILT and cost nothing to use. Prefer them whenever one
-  can do the job, and use the name EXACTLY as written:
-{library}
+- Prefer an agent that ALREADY EXISTS (the message lists them) whenever one can
+  do the job, and use its name EXACTLY as written.
 - If none fits, prefer one of these standard names before inventing your own:
 {standard}
 - Describe every agent by its FUNCTION, never by this task's subject.
@@ -309,10 +308,17 @@ exists is free; a new name costs a full code-generation call. So:
   every time.
 """
 
-# The task itself, sent as the message. Everything above is standing policy
-# and goes in a cached system block, so a second run re-reads it at cache
-# price instead of paying full input tokens for the same rules again.
-TASK_PROMPT = """User task:
+# What changes between runs, and therefore may NOT live in the cached block.
+#
+# The library catalogue is ranked by use count, so it is rewritten by almost
+# every run. Holding it in the cached prefix meant the whole 1,400-token
+# policy was invalidated each time - paying the cache-write premium and never
+# once collecting the discount. Volatile text goes in the message; only text
+# that is byte-identical between runs earns a cache breakpoint.
+TASK_PROMPT = """Agents already built and free to use (prefer these):
+{library}
+
+User task:
 {task}
 """
 
@@ -326,17 +332,16 @@ def plan_agents(task: str, usage: Usage | None = None) -> Plan:
     from config import cached_system
     from library import describe_for_planner
 
-    # The rules, the vetted packages and the library catalogue are identical
-    # between runs, so they travel as a cached system block; only the task
-    # itself is new input.
+    # The rules, the vetted package list and the standard vocabulary are
+    # byte-identical on every run, so they travel as one cached system block:
+    # roughly 1,400 tokens re-read at cache price instead of full price.
     policy = PLANNER_PROMPT.format(
         max_agents=MAX_AGENTS,
-        library=describe_for_planner(),
         standard="\n".join(f"  - {name} - {role}" for name, role in STANDARD_AGENTS.items()),
         packages=_wrap("  ", sorted(ALLOWED_PACKAGES)),
     )
     return complete_structured(
-        TASK_PROMPT.format(task=task),
+        TASK_PROMPT.format(task=task, library=describe_for_planner()),
         Plan,
         system=cached_system(policy),
         usage=usage,

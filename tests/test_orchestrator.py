@@ -113,7 +113,7 @@ def collaborators(monkeypatch, tmp_path):
     monkeypatch.setattr(
         orchestrator,
         "generate_agent_code",
-        lambda spec, upstream=None, feedback=None, usage=None, task="", effort=None: SOURCE,
+        lambda spec, upstream=None, feedback=None, usage=None, task="", effort=None, model=None: SOURCE,
     )
     monkeypatch.setattr(orchestrator, "save_agent_file", fake_save)
     monkeypatch.setattr(
@@ -122,12 +122,12 @@ def collaborators(monkeypatch, tmp_path):
     monkeypatch.setattr(
         orchestrator,
         "execute_agent",
-        lambda path, task, outputs, python_exe=None, effort=None: ok_result(path),
+        lambda path, task, outputs, python_exe=None, effort=None, model=None: ok_result(path),
     )
     monkeypatch.setattr(
         orchestrator,
         "merge_outputs",
-        lambda task, outputs, usage=None, effort=None: "the answer",
+        lambda task, outputs, usage=None, effort=None, model=None: "the answer",
     )
     # The council sits only for tasks graded deep; sequencing tests use
     # standard plans, and the council path has its own tests below.
@@ -190,7 +190,7 @@ def test_library_hit_skips_generation(collaborators, monkeypatch):
 def test_failed_agent_is_repaired_and_events_say_so(collaborators, monkeypatch):
     attempts: dict[str, int] = {}
 
-    def flaky_execute(path, task, outputs, python_exe=None, effort=None):
+    def flaky_execute(path, task, outputs, python_exe=None, effort=None, model=None):
         attempts[path.stem] = attempts.get(path.stem, 0) + 1
         if path.stem == "research_agent" and attempts[path.stem] == 1:
             return failed_result(path)
@@ -215,12 +215,12 @@ def test_every_agent_failing_raises_before_merge(collaborators, monkeypatch):
     monkeypatch.setattr(
         orchestrator,
         "execute_agent",
-        lambda path, task, outputs, python_exe=None, effort=None: failed_result(path),
+        lambda path, task, outputs, python_exe=None, effort=None, model=None: failed_result(path),
     )
     monkeypatch.setattr(
         orchestrator,
         "generate_agent_code",
-        lambda spec, upstream=None, feedback=None, usage=None, task="", effort=None: SOURCE,
+        lambda spec, upstream=None, feedback=None, usage=None, task="", effort=None, model=None: SOURCE,
     )
     recorder = Recorder()
     with pytest.raises(RuntimeError, match="every agent failed"):
@@ -237,7 +237,7 @@ def test_on_agent_created_sees_every_written_file(collaborators):
 def test_an_agent_that_failed_is_never_offered_for_the_library(collaborators, monkeypatch):
     """A file that is known not to run must not become a free library hit."""
 
-    def one_fails(path, task, outputs, python_exe=None, effort=None):
+    def one_fails(path, task, outputs, python_exe=None, effort=None, model=None):
         return failed_result(path) if path.stem == "summary_agent" else ok_result(path)
 
     monkeypatch.setattr(orchestrator, "execute_agent", one_fails)
@@ -245,7 +245,7 @@ def test_an_agent_that_failed_is_never_offered_for_the_library(collaborators, mo
     monkeypatch.setattr(
         orchestrator,
         "generate_agent_code",
-        lambda spec, upstream=None, feedback=None, usage=None, task="", effort=None: SOURCE,
+        lambda spec, upstream=None, feedback=None, usage=None, task="", effort=None, model=None: SOURCE,
     )
 
     result = orchestrator.handle_task("do a thing", events=Recorder())
@@ -294,7 +294,7 @@ def test_a_short_answer_is_rejected_and_the_agents_run_again(collaborators):
     collaborators.setattr(
         orchestrator,
         "merge_outputs",
-        lambda task, outputs, usage=None, effort=None: next(merges),
+        lambda task, outputs, usage=None, effort=None, model=None: next(merges),
     )
 
     recorder = Recorder()
@@ -314,7 +314,7 @@ def test_the_revision_reruns_the_agents_on_the_gap_not_on_the_critique(collabora
     """
     seen: list[str] = []
 
-    def spy(path, task, outputs, python_exe=None, effort=None):
+    def spy(path, task, outputs, python_exe=None, effort=None, model=None):
         seen.append(task)
         return ok_result(path)
 
@@ -341,7 +341,7 @@ def test_a_judgment_miss_is_first_closed_by_a_cheap_remerge(collaborators):
     """Most misses are the merger's - one re-merge, no team rerun, no re-billing."""
     executions = {"n": 0}
 
-    def counting(path, task, outputs, python_exe=None, effort=None):
+    def counting(path, task, outputs, python_exe=None, effort=None, model=None):
         executions["n"] += 1
         return ok_result(path)
 
@@ -357,7 +357,7 @@ def test_a_judgment_miss_is_first_closed_by_a_cheap_remerge(collaborators):
     collaborators.setattr(
         orchestrator,
         "merge_outputs",
-        lambda task, outputs, usage=None, effort=None: next(merges),
+        lambda task, outputs, usage=None, effort=None, model=None: next(merges),
     )
 
     result = orchestrator.handle_task("write 200 words", events=Recorder())
@@ -409,7 +409,7 @@ def one_agent_plan() -> Plan:
 def test_a_single_agent_answer_skips_the_merge_call(collaborators, monkeypatch):
     monkeypatch.setattr(orchestrator, "plan_agents", lambda task, usage=None: one_agent_plan())
 
-    def explode(task, outputs, usage=None, effort=None):  # pragma: no cover
+    def explode(task, outputs, usage=None, effort=None, model=None):  # pragma: no cover
         raise AssertionError("one clean output must not be re-billed through a merge")
 
     monkeypatch.setattr(orchestrator, "merge_outputs", explode)
@@ -430,13 +430,13 @@ def test_a_single_agent_answer_skips_the_merge_call(collaborators, monkeypatch):
 def test_a_lone_survivor_among_failures_is_still_merged(collaborators, monkeypatch):
     """With failures, the merge is what weaves survival into an honest answer."""
 
-    def one_fails(path, task, outputs, python_exe=None, effort=None):
+    def one_fails(path, task, outputs, python_exe=None, effort=None, model=None):
         return failed_result(path) if path.stem == "summary_agent" else ok_result(path)
 
     monkeypatch.setattr(orchestrator, "execute_agent", one_fails)
     merged = {"n": 0}
 
-    def counting_merge(task, outputs, usage=None, effort=None):
+    def counting_merge(task, outputs, usage=None, effort=None, model=None):
         merged["n"] += 1
         return "the woven answer"
 
@@ -462,7 +462,7 @@ def test_a_transient_api_error_reruns_the_same_file_without_regenerating(
     monkeypatch.setattr(orchestrator.time, "sleep", lambda seconds: None)
     attempts: dict[str, int] = {}
 
-    def flaky(path, task, outputs, python_exe=None, effort=None):
+    def flaky(path, task, outputs, python_exe=None, effort=None, model=None):
         attempts[path.stem] = attempts.get(path.stem, 0) + 1
         if path.stem == "research_agent" and attempts[path.stem] == 1:
             return AgentResult(
@@ -481,7 +481,7 @@ def test_a_transient_api_error_reruns_the_same_file_without_regenerating(
     monkeypatch.setattr(
         orchestrator,
         "generate_agent_code",
-        lambda spec, upstream=None, feedback=None, usage=None, task="", effort=None: SOURCE,
+        lambda spec, upstream=None, feedback=None, usage=None, task="", effort=None, model=None: SOURCE,
     )
 
     recorder = RetryRecorder()
@@ -496,7 +496,7 @@ def test_a_transient_api_error_reruns_the_same_file_without_regenerating(
 def test_a_timeout_is_reported_as_not_a_code_problem_and_never_repaired(
     collaborators, monkeypatch
 ):
-    def times_out(path, task, outputs, python_exe=None, effort=None):
+    def times_out(path, task, outputs, python_exe=None, effort=None, model=None):
         if path.stem == "research_agent":
             return AgentResult(
                 name=path.stem, path=path, ok=False, error="timed out after 300s"
@@ -521,7 +521,7 @@ def test_a_revision_that_produces_nothing_keeps_the_first_answer(collaborators):
     )
     calls = {"n": 0}
 
-    def sometimes(path, task, outputs, python_exe=None, effort=None):
+    def sometimes(path, task, outputs, python_exe=None, effort=None, model=None):
         calls["n"] += 1
         # first round succeeds, every rerun fails
         return ok_result(path) if calls["n"] <= 2 else failed_result(path)
@@ -599,7 +599,7 @@ def test_agents_receive_exactly_their_dependency_closure(collaborators, monkeypa
     monkeypatch.setattr(orchestrator, "plan_agents", lambda task, usage=None: graph_plan())
     seen: dict[str, dict] = {}
 
-    def spy(path, task, outputs, python_exe=None, effort=None):
+    def spy(path, task, outputs, python_exe=None, effort=None, model=None):
         seen[path.stem] = dict(outputs)
         return ok_result(path)
 
@@ -622,7 +622,7 @@ def test_the_generator_is_told_the_closure_not_the_whole_list(collaborators, mon
     monkeypatch.setattr(orchestrator, "plan_agents", lambda task, usage=None: graph_plan())
     contracts: dict[str, list] = {}
 
-    def spy_generate(spec, upstream=None, feedback=None, usage=None, task="", effort=None):
+    def spy_generate(spec, upstream=None, feedback=None, usage=None, task="", effort=None, model=None):
         contracts[spec.name] = list(upstream or [])
         return SOURCE
 
@@ -638,7 +638,7 @@ def test_a_plan_without_dependencies_still_runs_as_a_chain(collaborators, monkey
     """The backward-compatible default: no declared edges means the old wiring."""
     seen: dict[str, dict] = {}
 
-    def spy(path, task, outputs, python_exe=None, effort=None):
+    def spy(path, task, outputs, python_exe=None, effort=None, model=None):
         seen[path.stem] = dict(outputs)
         return ok_result(path)
 
@@ -732,7 +732,7 @@ def test_repairing_a_kept_agent_is_recorded_as_an_evolution(collaborators, monke
     monkeypatch.setattr(orchestrator, "remember", spy_remember)
     attempts: dict[str, int] = {}
 
-    def flaky(path, task, outputs, python_exe=None, effort=None):
+    def flaky(path, task, outputs, python_exe=None, effort=None, model=None):
         attempts[path.stem] = attempts.get(path.stem, 0) + 1
         if path.stem == "research_agent" and attempts[path.stem] == 1:
             return failed_result(path)

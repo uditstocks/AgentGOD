@@ -370,3 +370,34 @@ def test_search_results_are_not_mistaken_for_the_answer(monkeypatch):
     runtime = _load_runtime(monkeypatch, reply, captured)
 
     assert runtime["call_llm"]("material", search=True) == "the answer"
+
+
+# --- a second model call is spent only where the run earned it -----------------
+
+
+def test_the_runtime_offers_a_deep_helper():
+    """One agent file must serve a cheap task and an expensive one alike."""
+    source = generator.assemble_agent("def run(task, previous_outputs):\n    return 'x'\n")
+    assert "def deep():" in source
+    assert 'EFFORT in ("high", "xhigh", "max")' in source
+
+
+def test_the_policy_gates_refinement_on_deep():
+    policy = generator.GENERATOR_POLICY
+    assert "if deep():" in policy
+    assert "ONE model call is the default" in policy
+    assert "deep() -> bool" in policy
+
+
+def test_a_generated_agent_may_call_deep_without_redefining_it():
+    """codeguard must accept the helper's use in generated logic."""
+    from codeguard import check_agent_source
+
+    body = (
+        "def run(task, previous_outputs):\n"
+        "    draft = call_llm(task)\n"
+        "    if deep():\n"
+        "        draft = call_llm('improve: ' + draft)\n"
+        "    return draft\n"
+    )
+    assert check_agent_source(generator.assemble_agent(body)) == []

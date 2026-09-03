@@ -487,7 +487,9 @@ Everything below has a working default. Only the key is required.
 | Variable | Default | Governs |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | - *(required)* | Access to the model |
-| `MODEL` | `claude-sonnet-5` | Any Claude model the Messages API serves |
+| `MODEL` | `claude-sonnet-5` | The workhorse: planning, code, agents, merging |
+| `FAST_MODEL` | `claude-haiku-4-5` | The mechanical checks - clarify and judge |
+| `DEEP_MODEL` | = `MODEL` | Used only for tasks graded `deep` |
 | `MAX_AGENTS` | `4` | Ceiling on team size |
 | `MAX_PARALLEL_AGENTS` | `4` | How many independent agents may run at once. `1` disables parallelism |
 | `COUNCIL` | `auto` | The adversarial review: `auto` (deep tasks only), `always`, `off` |
@@ -500,7 +502,7 @@ Everything below has a working default. Only the key is required.
 | `LLM_MAX_RETRIES` | `3` | Retries on a transient failure |
 | `MAX_CHARS_PER_INPUT` | `6000` | Cap on text forwarded to the next agent |
 | `TASK_REVISIONS` | `1` | Rebuilds allowed when the answer misses the request. `0` turns self-checking off |
-| `WEB_SEARCH_MAX_USES` | `5` | Searches one agent call may run |
+| `WEB_SEARCH_MAX_USES` | `3` | Searches one agent call may run (each carries a fee) |
 | `AGENTGOD_PLAIN` | - | Force plain output (same as `--plain`) |
 | `AGENTGOD_KEEP` | - | Standing keep answer: `always` or `never` |
 | `CLARIFY` | `auto` | The one pre-run question: `auto` or `off` |

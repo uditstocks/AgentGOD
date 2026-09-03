@@ -73,6 +73,8 @@ class Invocation:
     no_input: bool = False
     keep: str | None = None  # None = ask / env default, "always", "never"
     model: str | None = None
+    fast_model: str | None = None
+    deep_model: str | None = None
     effort: str | None = None
     council: str | None = None
 
@@ -121,7 +123,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     run = parser.add_argument_group("run controls")
-    run.add_argument("--model", metavar="NAME", help="model for this invocation only")
+    run.add_argument(
+        "--model", metavar="NAME", help="the workhorse model for this invocation"
+    )
+    run.add_argument(
+        "--fast-model",
+        metavar="NAME",
+        help="model for the mechanical checks (clarify, judge) - the cheap half",
+    )
+    run.add_argument(
+        "--deep-model",
+        metavar="NAME",
+        help="model used only for tasks the planner grades 'deep'",
+    )
     run.add_argument(
         "--effort",
         choices=EFFORTS,
@@ -206,6 +220,8 @@ def parse(argv: list[str]) -> Invocation:
         no_input=args.no_input,
         keep="always" if args.keep else ("never" if args.discard else None),
         model=args.model,
+        fast_model=args.fast_model,
+        deep_model=args.deep_model,
         effort=args.effort,
         council=args.council,
     )
@@ -223,6 +239,10 @@ def apply(invocation: Invocation) -> None:
 
     if invocation.model:
         os.environ["MODEL"] = invocation.model
+    if invocation.fast_model:
+        os.environ["FAST_MODEL"] = invocation.fast_model
+    if invocation.deep_model:
+        os.environ["DEEP_MODEL"] = invocation.deep_model
     if invocation.effort:
         os.environ["LLM_EFFORT"] = invocation.effort
     if invocation.council:

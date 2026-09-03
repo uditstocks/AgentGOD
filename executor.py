@@ -207,7 +207,7 @@ def install_dependencies(specs: list[AgentSpec]) -> DependencyReport:
     return report
 
 
-def _child_env(effort: str | None = None) -> dict[str, str]:
+def _child_env(effort: str | None = None, model: str | None = None) -> dict[str, str]:
     """Environment for an agent subprocess.
 
     UTF-8 is forced both ways: without it a piped child on Windows writes
@@ -222,6 +222,8 @@ def _child_env(effort: str | None = None) -> dict[str, str]:
     env["PYTHONUTF8"] = "1"
     if effort:
         env["LLM_EFFORT"] = effort
+    if model:
+        env["MODEL"] = model
     return env
 
 
@@ -231,7 +233,7 @@ def _sanitise(text: str) -> str:
     return text.replace(project, "<project>").replace(project.replace("\\", "/"), "<project>")
 
 
-def _extract_usage(stderr: str) -> tuple[dict[str, float], str]:
+def _extract_usage(stderr: str, model: str | None = None) -> tuple[dict[str, float], str]:
     """Pull the agent's token report off stderr, returning the remaining text.
 
     The API bills tokens and says nothing about money, so the cost is priced
@@ -249,7 +251,9 @@ def _extract_usage(stderr: str) -> tuple[dict[str, float], str]:
             continue
         totals["input_tokens"] += float(usage.get("input_tokens") or 0)
         totals["output_tokens"] += float(usage.get("output_tokens") or 0)
-    totals["cost_usd"] = estimate_cost(totals["input_tokens"], totals["output_tokens"]) or 0.0
+    totals["cost_usd"] = (
+        estimate_cost(totals["input_tokens"], totals["output_tokens"], model=model) or 0.0
+    )
     return totals, "\n".join(remaining).strip()
 
 
@@ -290,6 +294,7 @@ def execute_agent(
     previous_outputs: dict[str, str],
     python_exe: str | None = None,
     effort: str | None = None,
+    model: str | None = None,
 ) -> AgentResult:
     """Run one agent file as a subprocess.
 
@@ -322,14 +327,14 @@ def execute_agent(
             encoding="utf-8",
             errors="replace",
             timeout=AGENT_TIMEOUT_SECONDS,
-            env=_child_env(effort),
+            env=_child_env(effort, model),
         )
     except subprocess.TimeoutExpired:
         return failure(f"timed out after {AGENT_TIMEOUT_SECONDS}s")
     except OSError as error:
         return failure(f"could not start agent: {error}")
 
-    usage, stderr = _extract_usage(completed.stderr or "")
+    usage, stderr = _extract_usage(completed.stderr or "", model)
     stdout = (completed.stdout or "").strip()
 
     if completed.returncode != 0:

@@ -13,7 +13,7 @@ from council import Challenge, deliberate, should_convene
 def fake_challenge(monkeypatch, reply: Challenge):
     seen: dict = {}
 
-    def stub(prompt, output_format, system=None, max_tokens=None, usage=None, effort=None):
+    def stub(prompt, output_format, system=None, max_tokens=None, usage=None, effort=None, model=None):
         seen["prompt"] = prompt
         return reply
 
@@ -22,7 +22,7 @@ def fake_challenge(monkeypatch, reply: Challenge):
 
 
 def fake_refinement(monkeypatch, reply: str):
-    def stub(prompt, system=None, max_tokens=None, usage=None, search=False, effort=None):
+    def stub(prompt, system=None, max_tokens=None, usage=None, search=False, effort=None, model=None):
         return reply
 
     monkeypatch.setattr(council, "complete", stub)

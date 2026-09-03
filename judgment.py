@@ -15,13 +15,49 @@ wanting will bill twice for the same work.
 
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, Field
 
-from config import Usage, complete_structured
+from config import Usage, complete_structured, model_for
 
 # How many chars of an answer the judge is shown. A judge that reads a
 # 40 KB answer costs more than the run it is checking.
 MAX_ANSWER_CHARS = 8000
+
+# A demand the judge can actually measure an answer against: a number, or a
+# named shape. These are what the check exists for - the 200-word brief that
+# came back at 600 words - and they are the only reason worth a round trip on
+# a task the planner already graded as trivially simple.
+#
+# Any digit counts, deliberately. "3 benefits", "200 words", "top 5" and even
+# "the 2008 crisis" all send the answer to the judge: over-judging costs one
+# cheap call, while under-judging ships an answer that quietly broke a stated
+# limit. The bias belongs on the safe side.
+_COUNT_DEMAND = re.compile(r"\d")
+_SHAPE_DEMAND = re.compile(
+    r"\b(?:bullets?|tables?|lists?|json|csv|yaml|markdown|outlines?|haikus?|"
+    r"sonnets?|poems?|emails?|memos?|essays?|summar(?:y|ies)|step by step|"
+    r"exactly|at least|at most|no more than|in the form of|as a)\b",
+    re.IGNORECASE,
+)
+
+
+def has_checkable_demand(task: str) -> bool:
+    """Whether the task states something an answer can be measured against."""
+    return bool(_COUNT_DEMAND.search(task) or _SHAPE_DEMAND.search(task))
+
+
+def should_judge(complexity: str, task: str) -> bool:
+    """Whether this answer is worth the price of reading it back.
+
+    The check earns its cost wherever the answer could quietly miss the
+    request. On a task the planner itself graded trivially simple - one
+    obvious step, a short answer - with no stated count or format to break,
+    there is nothing for the judge to catch, and it is a full round trip
+    billed on the cheapest task in the product. Anything else is judged.
+    """
+    return complexity != "simple" or has_checkable_demand(task)
 
 
 class Clarification(BaseModel):
@@ -102,15 +138,16 @@ def clarifying_question(task: str, usage: Usage | None = None) -> str | None:
     """
     if not task.strip():
         return None
-    # Low effort on purpose: this call sits between the user pressing Enter
-    # and anything appearing on screen, and its only job is a yes/no with a
-    # short question - the cheapest thinking the dial offers is plenty.
+    # The cheapest call in the product, deliberately: it sits between the user
+    # pressing Enter and anything appearing on screen, and its whole job is a
+    # yes/no plus one short question. Low effort, on the fast model.
     result = complete_structured(
         CLARIFY_PROMPT.format(task=task),
         Clarification,
         max_tokens=1000,
         usage=usage,
         effort="low",
+        model=model_for("clarify"),
     )
     question = result.question.strip()
     return question or None
@@ -129,12 +166,18 @@ def judge(
     if len(shown) > MAX_ANSWER_CHARS:
         shown = shown[:MAX_ANSWER_CHARS] + "\n[...truncated...]"
 
+    # Comparing an answer against the demands the task actually stated is a
+    # checking job, not a writing one: it needs care, not depth. It runs on
+    # the fast model, which is where the architect model's price stops being
+    # worth paying. The council - which judges substance rather than
+    # compliance - stays on the main model.
     verdict = complete_structured(
         JUDGE_PROMPT.format(task=task, answer=shown),
         Verdict,
         max_tokens=1500,
         usage=usage,
         effort=effort,
+        model=model_for("judge"),
     )
     # A "not done" with nothing to act on cannot drive a second attempt, so it
     # is treated as done - retrying on it would bill for the same answer twice.

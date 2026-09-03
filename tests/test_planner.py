@@ -267,3 +267,42 @@ def test_complexity_defaults_to_standard():
 def test_complexity_accepts_the_three_grades():
     for grade in ("simple", "standard", "deep"):
         assert Plan(agents=[spec()], reasoning="r", complexity=grade).complexity == grade
+
+
+# --- the cached prefix must hold nothing that changes between runs -------------
+
+
+def test_the_cached_policy_holds_no_volatile_text():
+    """The library catalogue is re-ranked by use count on almost every run.
+
+    Holding it in the cached prefix invalidated the whole ~1,400-token block
+    each time - paying the cache-write premium and never once collecting the
+    discount. Volatile text belongs in the message.
+    """
+    from codeguard import ALLOWED_PACKAGES
+    from config import MAX_AGENTS
+    from planner import PLANNER_PROMPT, STANDARD_AGENTS, TASK_PROMPT, _wrap
+
+    policy = PLANNER_PROMPT.format(
+        max_agents=MAX_AGENTS,
+        standard="\n".join(f"  - {n} - {r}" for n, r in STANDARD_AGENTS.items()),
+        packages=_wrap("  ", sorted(ALLOWED_PACKAGES)),
+    )
+    # Rendering twice must give byte-identical text, or the cache cannot hit.
+    again = PLANNER_PROMPT.format(
+        max_agents=MAX_AGENTS,
+        standard="\n".join(f"  - {n} - {r}" for n, r in STANDARD_AGENTS.items()),
+        packages=_wrap("  ", sorted(ALLOWED_PACKAGES)),
+    )
+    assert policy == again
+    assert "{library}" not in policy  # the catalogue is not a policy field
+    assert "{library}" in TASK_PROMPT  # it travels with the task instead
+
+
+def test_the_task_message_still_shows_the_library():
+    """Moving it out of the cache must not hide it from the planner."""
+    from planner import TASK_PROMPT
+
+    rendered = TASK_PROMPT.format(task="write a haiku", library="  - writer_agent: write prose")
+    assert "writer_agent" in rendered
+    assert "write a haiku" in rendered

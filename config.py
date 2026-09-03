@@ -36,6 +36,43 @@ ANTHROPIC_VERSION = "2023-06-01"
 # Default model (override with the MODEL env var).
 MODEL = os.getenv("MODEL", "claude-sonnet-5")
 
+# The model for the run's mechanical decisions - the ones that compare, check
+# and classify rather than write or reason about the subject. Reading an
+# answer back against a stated word count is not the work the architect model
+# is for, and it is billed at half the price here.
+#
+# Set FAST_MODEL to MODEL to turn the split off entirely.
+FAST_MODEL = os.getenv("FAST_MODEL", "claude-haiku-4-5")
+
+# The model for work the planner graded `deep`. Unset, it is MODEL, so nothing
+# changes for anyone who does not ask for it; set it to a stronger model and
+# the extra money is spent ONLY on the tasks that were judged to deserve it,
+# never on a translation or a one-liner.
+DEEP_MODEL = os.getenv("DEEP_MODEL", "").strip() or MODEL
+
+# Which model each job in a run is entitled to. One table, so the question
+# "why did this cost that?" has exactly one place to look.
+#
+#   clarify / judge   mechanical checks - compare, classify, answer yes or no
+#   plan / generate   the architect's own reasoning and code writing
+#   run               the generated agents doing the actual work
+#   merge             writing the answer the user reads
+#   council           the adversarial reading, which only ever sits on deep work
+_MECHANICAL_ROLES = frozenset({"clarify", "judge"})
+
+
+def model_for(role: str, complexity: str = "standard") -> str:
+    """The model this job should run on, given how the task was graded.
+
+    Mechanical checks are always cheap: their job does not get better on a
+    bigger model. Everything else runs on MODEL, and rises to DEEP_MODEL only
+    for a task the planner itself called deep - which is how a run can spend
+    seriously on hard work without spending anything extra on easy work.
+    """
+    if role in _MECHANICAL_ROLES:
+        return FAST_MODEL
+    return DEEP_MODEL if complexity == "deep" else MODEL
+
 # Where generated agent files live while they run.
 GENERATED_DIR = PROJECT_DIR / "generated_agents"
 
@@ -102,6 +139,17 @@ LLM_EFFORT = os.getenv("LLM_EFFORT", "medium")
 # The effort scale, weakest first, for comparing two settings.
 _EFFORT_SCALE = ("low", "medium", "high", "xhigh", "max")
 
+# Not every model takes the effort dial: the small, fast ones reject the
+# parameter outright with a 400 rather than ignoring it. Sending it anyway
+# would make the cheap half of a run fail every single time, so the capability
+# is named here rather than assumed.
+_NO_EFFORT_PREFIXES = ("claude-haiku",)
+
+
+def supports_effort(model: str) -> bool:
+    """Whether `model` accepts output_config.effort at all."""
+    return not model.startswith(_NO_EFFORT_PREFIXES)
+
 
 def effort_for(complexity: str) -> str:
     """How hard every call in a run works, given the planner's grade.
@@ -127,9 +175,12 @@ MAX_CHARS_PER_INPUT = _int_env("MAX_CHARS_PER_INPUT", 6000)
 # codeguard - a generated agent only adds this tool to its own request.
 WEB_SEARCH_TOOL_TYPE = "web_search_20260209"
 
-# How many searches one call may run. The ceiling is the cost control: a
-# question that needs more than this is a question that needs a better prompt.
-WEB_SEARCH_MAX_USES = _int_env("WEB_SEARCH_MAX_USES", 5)
+# How many searches one call may run. This is the most expensive dial in the
+# product: a search carries a per-use fee of its own, on top of the tokens the
+# results cost - one search bills more than an entire simple task. Three is
+# enough to check a fact from more than one angle; a question needing more is
+# a question needing a better prompt.
+WEB_SEARCH_MAX_USES = _int_env("WEB_SEARCH_MAX_USES", 3)
 
 # The server loop pauses after 10 tool iterations and asks to be resumed.
 # Resuming is cheap; resuming forever is not.
@@ -141,8 +192,10 @@ USAGE_MARKER = "__AGENT_USAGE__"
 # Bumped whenever the trusted runtime in generator.py gains or changes a
 # capability. A library agent written against an older runtime is retired and
 # rewritten rather than handed back: it cannot call what it never knew about,
-# and the planner has no way to tell. Version 2 added web search.
-AGENT_RUNTIME_VERSION = 2
+# and the planner has no way to tell. Version 2 added web search; version 3
+# added deep(), which is what stops an agent paying for a refinement call on
+# a task that never warranted one.
+AGENT_RUNTIME_VERSION = 3
 
 # USD per 1M tokens (input, output), used only for a rough run-cost estimate.
 PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
@@ -203,6 +256,7 @@ def complete(
     usage: Usage | None = None,
     search: bool = False,
     effort: str | None = None,
+    model: str | None = None,
 ) -> str:
     """One Messages API call, returned as plain text.
 
@@ -215,11 +269,13 @@ def complete(
     to service here - except that a long search session pauses partway and
     asks to be resumed, which is what the loop below is for.
     """
+    chosen = model or MODEL
     request: dict[str, Any] = {
-        "model": MODEL,
+        "model": chosen,
         "max_tokens": max_tokens or LLM_MAX_TOKENS,
-        "output_config": {"effort": effort or LLM_EFFORT},
     }
+    if supports_effort(chosen):
+        request["output_config"] = {"effort": effort or LLM_EFFORT}
     if system:
         request["system"] = system
     if search:
@@ -231,7 +287,7 @@ def complete(
     for _ in range(MAX_CONTINUATIONS + 1):
         message = client.messages.create(messages=messages, **request)
         if usage is not None:
-            usage.record(message)
+            usage.record(message, model=chosen)
         if message.stop_reason != "pause_turn":
             break
         # Resume by handing the paused turn straight back. No "continue"
@@ -252,26 +308,29 @@ def complete_structured(
     max_tokens: int | None = None,
     usage: Usage | None = None,
     effort: str | None = None,
+    model: str | None = None,
 ) -> _Schema:
     """One call whose reply is constrained to `output_format`, and validated.
 
     The shape is enforced by the API rather than fished out of prose
     afterwards, so a plan either arrives usable or not at all.
     """
+    chosen = model or MODEL
     request: dict[str, Any] = {
-        "model": MODEL,
+        "model": chosen,
         "max_tokens": max_tokens or LLM_MAX_TOKENS,
-        "output_config": {"effort": effort or LLM_EFFORT},
         "output_format": output_format,
         "messages": [{"role": "user", "content": prompt}],
     }
+    if supports_effort(chosen):
+        request["output_config"] = {"effort": effort or LLM_EFFORT}
     if system:
         request["system"] = system
 
     # cast(Any): the typeshed for the SDK lags the live API's parse endpoint.
     message = cast(Any, get_client().messages).parse(**request)
     if usage is not None:
-        usage.record(message)
+        usage.record(message, model=chosen)
 
     parsed = getattr(message, "parsed_output", None)
     if parsed is None:
@@ -304,12 +363,36 @@ def response_text(response: Any) -> str:
     return "".join(parts)
 
 
-def estimate_cost(input_tokens: float, output_tokens: float) -> float | None:
-    """Rough USD cost for a token count, or None if this model has no price here."""
-    price = PRICING_PER_MTOK.get(MODEL)
+# What the provider charges for cached input, as multiples of the input rate:
+# writing a cache entry costs a premium, reading one is nearly free. Ignoring
+# these would make every cost estimate wrong in both directions - a cache read
+# is not free, and a cache write is not the plain input price.
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.1
+
+
+def estimate_cost(
+    input_tokens: float,
+    output_tokens: float,
+    cache_write_tokens: float = 0.0,
+    cache_read_tokens: float = 0.0,
+    model: str | None = None,
+) -> float | None:
+    """Rough USD cost for a token count, or None if this model has no price here.
+
+    `model` names the model that actually produced these tokens. A run now
+    spends across two of them, and pricing every call at the architect's rate
+    would overstate what the cheap ones cost.
+    """
+    price = PRICING_PER_MTOK.get(model or MODEL)
     if price is None:
         return None
-    return (input_tokens * price[0] + output_tokens * price[1]) / 1_000_000
+    billed_input = (
+        input_tokens
+        + cache_write_tokens * CACHE_WRITE_MULTIPLIER
+        + cache_read_tokens * CACHE_READ_MULTIPLIER
+    )
+    return (billed_input * price[0] + output_tokens * price[1]) / 1_000_000
 
 
 @dataclass
@@ -324,15 +407,40 @@ class Usage:
     calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    # Cached input is billed on its own terms and is reported separately by
+    # the API - it is NOT included in input_tokens, so a run that cached well
+    # would otherwise look like a run that sent almost nothing.
+    cache_write_tokens: int = 0
+    cache_read_tokens: int = 0
+    # Money is accumulated as it is spent, at the rate of the model that
+    # actually produced each call. A run spends across two models now, so a
+    # single total priced at the architect's rate would simply be wrong.
+    cost: float = 0.0
+    priced_calls: int = 0
     _lock: threading.Lock = field(
         default_factory=threading.Lock, repr=False, compare=False
     )
 
-    def add(self, input_tokens: int, output_tokens: int) -> None:
+    def add(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_write_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        model: str | None = None,
+    ) -> None:
+        spent = estimate_cost(
+            input_tokens, output_tokens, cache_write_tokens, cache_read_tokens, model
+        )
         with self._lock:
             self.calls += 1
             self.input_tokens += input_tokens
             self.output_tokens += output_tokens
+            self.cache_write_tokens += cache_write_tokens
+            self.cache_read_tokens += cache_read_tokens
+            if spent is not None:
+                self.cost += spent
+                self.priced_calls += 1
 
     def merge(self, other: Usage) -> None:
         """Fold another total into this one.
@@ -345,24 +453,32 @@ class Usage:
             self.calls += other.calls
             self.input_tokens += other.input_tokens
             self.output_tokens += other.output_tokens
+            self.cache_write_tokens += other.cache_write_tokens
+            self.cache_read_tokens += other.cache_read_tokens
+            self.cost += other.cost
+            self.priced_calls += other.priced_calls
 
-    def record(self, response: Any) -> None:
+    def record(self, response: Any, model: str | None = None) -> None:
         """Accumulate usage from a Messages API reply, if it reported any."""
         reported = getattr(response, "usage", None)
         self.add(
             int(getattr(reported, "input_tokens", 0) or 0),
             int(getattr(reported, "output_tokens", 0) or 0),
+            int(getattr(reported, "cache_creation_input_tokens", 0) or 0),
+            int(getattr(reported, "cache_read_input_tokens", 0) or 0),
+            model=model,
         )
 
     @property
     def cost_usd(self) -> float | None:
-        """Rough cost estimate, or None when the model's price is unknown."""
-        return estimate_cost(self.input_tokens, self.output_tokens)
+        """Rough cost estimate, or None when no call could be priced."""
+        return self.cost if self.priced_calls else None
 
     def summary(self) -> str:
         cost = self.cost_usd
         money = f" · ~${cost:.4f}" if cost is not None else ""
+        cached = f" · {self.cache_read_tokens:,} cached" if self.cache_read_tokens else ""
         return (
             f"{self.calls} LLM calls · {self.input_tokens:,} in / "
-            f"{self.output_tokens:,} out tokens{money}"
+            f"{self.output_tokens:,} out tokens{cached}{money}"
         )

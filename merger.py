@@ -38,6 +38,7 @@ def merge_outputs(
     outputs: dict[str, str],
     usage: Usage | None = None,
     effort: str | None = None,
+    model: str | None = None,
 ) -> str:
     """Combine every agent's output into a single final response.
 
@@ -52,4 +53,5 @@ def merge_outputs(
         MERGER_PROMPT.format(task=task, outputs=_format_outputs(outputs)),
         usage=usage,
         effort=effort,
+        model=model,
     ).strip()

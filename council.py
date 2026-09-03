@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from config import COUNCIL, Usage, complete, complete_structured
+from config import COUNCIL, Usage, complete, complete_structured, model_for
 
 # How much of the answer the critic reads. Same reasoning as the judge's cap:
 # a critic that reads a 40 KB answer costs more than the run it is checking.
@@ -108,7 +108,11 @@ def _clip(answer: str) -> str:
 
 
 def challenge(
-    task: str, answer: str, usage: Usage | None = None, effort: str | None = None
+    task: str,
+    answer: str,
+    usage: Usage | None = None,
+    effort: str | None = None,
+    model: str | None = None,
 ) -> Challenge:
     """The critic's reading of the answer: faults first, verdict second.
 
@@ -121,6 +125,9 @@ def challenge(
         max_tokens=2000,
         usage=usage,
         effort=effort,
+        # The council only ever sits on deep work, so it is entitled to the
+        # deep model: this is the one check that judges substance, not shape.
+        model=model or model_for("council", "deep"),
     )
     if found.flawed and not found.weaknesses.strip():
         return Challenge(weaknesses="", flawed=False)
@@ -133,17 +140,23 @@ def refine(
     weaknesses: str,
     usage: Usage | None = None,
     effort: str | None = None,
+    model: str | None = None,
 ) -> str:
     """One repair pass over the answer, fixing the named faults and nothing else."""
     return complete(
         REFINE_PROMPT.format(task=task, answer=answer, weaknesses=weaknesses),
         usage=usage,
         effort=effort,
+        model=model or model_for("council", "deep"),
     ).strip()
 
 
 def deliberate(
-    task: str, answer: str, usage: Usage | None = None, effort: str | None = None
+    task: str,
+    answer: str,
+    usage: Usage | None = None,
+    effort: str | None = None,
+    model: str | None = None,
 ) -> tuple[str, bool, str]:
     """The whole sitting: challenge, then refine only if something real was found.
 
@@ -152,10 +165,12 @@ def deliberate(
     A refinement that comes back empty is discarded: a critic must never
     cost the user the answer it was reviewing.
     """
-    verdict = challenge(task, answer, usage=usage, effort=effort)
+    verdict = challenge(task, answer, usage=usage, effort=effort, model=model)
     if not verdict.flawed:
         return answer, False, ""
-    revised = refine(task, answer, verdict.weaknesses, usage=usage, effort=effort)
+    revised = refine(
+        task, answer, verdict.weaknesses, usage=usage, effort=effort, model=model
+    )
     if not revised:
         return answer, False, ""
     return revised, True, verdict.weaknesses
