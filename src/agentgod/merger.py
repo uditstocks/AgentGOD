@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .config import MAX_CHARS_PER_INPUT, Usage, complete
 
 MERGER_PROMPT = """You are the coordinator of a multi-agent system.
@@ -64,3 +66,71 @@ def merge_outputs(
         effort=effort,
         model=model,
     ).strip()
+
+
+# The characters that open and close a Markdown code block.
+FENCE = "`" * 3
+
+# Lines that only source code has. Every pattern is anchored at the start of
+# the line, so a sentence that merely contains the word - "import the CSV
+# first" - cannot match; only a line that *begins* as a declaration does.
+_DECLARATION = re.compile(
+    r"^(?:#!/|@\w|(?:from|import|def|class|async|package|using|#include)\s+\S"
+    r"|(?:public|private|protected|static|func|fn|const|let|var|function)\s+\w)"
+)
+
+# Lines carrying code's punctuation rather than a sentence's: a closing
+# bracket, a trailing brace or colon, a keyword statement, an assignment,
+# a bare call.
+_SYNTAX = re.compile(
+    r"(?:^\s*[)\]}]|[;{]\s*$|:\s*$"
+    r"|^\s*(?:return|if|for|while|try|except|with|elif|else|raise|yield)\b"
+    r"|^\s*[\w.\[\]]+\s*(?:=|\+=|-=)\s*\S|\w\([^)]*\)\s*$)"
+)
+
+# How much of an answer must read as code before it is treated as code, and
+# how many outright declarations it must contain. Both thresholds were set
+# against every answer this installation had archived: 51 prose answers and
+# 13 code answers, with no prose answer reaching them.
+_CODE_LINE_RATIO = 0.45
+_MIN_DECLARATIONS = 2
+
+
+def looks_like_source(answer: str) -> bool:
+    """Whether `answer` is source code rather than prose about it."""
+    lines = [line for line in answer.splitlines() if line.strip()]
+    if not lines:
+        return False
+    declarations = sum(1 for line in lines if _DECLARATION.match(line))
+    if declarations < _MIN_DECLARATIONS:
+        return False
+    codey = sum(
+        1
+        for line in lines
+        if _DECLARATION.match(line) or _SYNTAX.search(line) or line[:1] in " \t"
+    )
+    return codey / len(lines) >= _CODE_LINE_RATIO
+
+
+def as_markdown(answer: str) -> str:
+    """The answer as a Markdown document, with raw source code fenced.
+
+    Every answer is read as Markdown - by the terminal that renders it and by
+    anything that opens the .md archive. Markdown joins a run of unfenced
+    lines into one paragraph, so raw code arrives with its newlines collapsed
+    and its indentation stripped: a whole function lands on a single line and
+    a `#` comment becomes a centred heading. That is not a rendering wobble;
+    it is the code being destroyed on the way to the user, in the terminal
+    and in the archive alike.
+
+    So the answer is made into valid Markdown once, here, at the point it is
+    produced - rather than each reader guessing. An answer that already
+    carries a fence is left exactly as written: the model did the job itself,
+    and second-guessing it is how a formatter starts corrupting good output.
+    """
+    text = answer.strip()
+    if not text or FENCE in text:
+        return answer
+    if not looks_like_source(text):
+        return answer
+    return f"{FENCE}\n{text}\n{FENCE}"

@@ -58,7 +58,7 @@ from .library import (
     reusable,
     up_to_date,
 )
-from .merger import merge_outputs
+from .merger import as_markdown, merge_outputs
 from .planner import AgentSpec, Plan, canonical_role, plan_agents, scrub_capabilities
 from .taskgraph import dependency_closure, waves
 
@@ -589,7 +589,11 @@ def handle_task(
     spend()
 
     return TaskResult(
-        response=response,
+        # One place, once: every answer - merged, single-agent, refined by
+        # the council, or rebuilt by a revision - leaves here as valid
+        # Markdown, so neither the terminal nor the .md archive has to guess
+        # whether it is looking at prose or at code whose newlines matter.
+        response=as_markdown(response),
         plan=plan,
         task=subject,
         complexity=plan.complexity,
