@@ -56,6 +56,15 @@ class AgentSpec(BaseModel):
     instructions: str = Field(
         description="Detailed instructions this agent must follow to do its single job"
     )
+    capability: str = Field(
+        default="",
+        description="What this agent does for ANY task, in one or two sentences, "
+        "naming NO subject from the current task. This is the ONLY text the code "
+        "generator is shown, so anything specific to today's request must be "
+        "absent from it - the subject reaches the agent at runtime instead. "
+        "Write 'Gather facts about whatever subject the task names', never "
+        "'Research the electric scooter market'.",
+    )
     depends_on: list[str] = Field(
         default_factory=list,
         description="Names of agents in THIS plan whose outputs this agent needs, "
@@ -306,6 +315,19 @@ exists is free; a new name costs a full code-generation call. So:
   Write "gather facts about the subject of the task", not "research electric
   scooters". A subject-specific agent can never be reused and costs full price
   every time.
+
+EVERY AGENT NEEDS A 'capability'. It is the ONLY text the code generator is
+shown - `role` and `instructions` are for the plan and the logs and are never
+passed on. So the capability must be true of this agent on ANY task, and must
+name nothing from this one. The agent is handed the real task at runtime; it
+does not need to be told the subject in advance, and an agent that was told it
+is an agent that can only ever do that one job.
+    role:        "Implement the natural-language-to-SQL conversion flow"
+    capability:  "Write correct, runnable Python for whatever the task asks
+                  for, following any stated interface or constraints."
+    role:        "Research the 2026 electric scooter market"
+    capability:  "Gather and lay out the key facts about whatever subject the
+                  task names, with the most decision-relevant points first"
 """
 
 # What changes between runs, and therefore may NOT live in the cached block.
@@ -346,6 +368,50 @@ def plan_agents(task: str, usage: Usage | None = None) -> Plan:
         system=cached_system(policy),
         usage=usage,
     )
+
+
+def _fallback_capability(spec: AgentSpec) -> str:
+    """The capability text to use when the planner's own leaked the subject.
+
+    A standard name already has a canonical, subject-free description; an
+    invented one falls back to a generic brief built from its name. Either
+    way the generator is handed something that names nothing.
+    """
+    standard = STANDARD_AGENTS.get(spec.name)
+    if standard:
+        return standard
+    words = spec.name.replace("_agent", "").replace("_", " ").strip() or "specialist"
+    return (
+        f"Act as the {words} specialist for whatever the task asks for, "
+        "working only from the task and any upstream results supplied at runtime."
+    )
+
+
+def scrub_capabilities(plan: Plan, task: str) -> list[str]:
+    """Guarantee no agent's capability carries this task's subject.
+
+    This is the seam the whole reuse story rests on. The generator is shown
+    the capability and nothing else, so a capability that names the subject
+    is the one way today's topic can still reach tomorrow's agent - and a
+    model asked to write "SQL translator" generically will simply reach for a
+    synonym. So the text is not trusted: it is checked against the task and
+    replaced outright when it leaks.
+
+    Returns the names of the agents whose capability had to be replaced, so
+    the caller can say so.
+    """
+    from topicguard import task_subjects
+
+    banned = set(task_subjects(task))
+    replaced: list[str] = []
+    for spec in plan.agents:
+        capability = spec.capability.strip()
+        leaked = banned & set(re.findall(r"[a-z][a-z'-]*", capability.lower()))
+        if not capability or leaked:
+            spec.capability = _fallback_capability(spec)
+            if capability:
+                replaced.append(spec.name)
+    return replaced
 
 
 def upstream_names(agents: list[AgentSpec], index: int) -> list[str]:

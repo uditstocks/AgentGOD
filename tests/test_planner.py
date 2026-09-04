@@ -10,7 +10,7 @@ from pydantic import ValidationError
 import planner
 from codeguard import ALLOWED_PACKAGES
 from config import MAX_AGENTS
-from planner import AgentSpec, Plan, safe_agent_name, upstream_names
+from planner import STANDARD_AGENTS, AgentSpec, Plan, safe_agent_name, upstream_names
 
 
 def spec(name: str = "research_agent", **kwargs: Any) -> AgentSpec:
@@ -306,3 +306,69 @@ def test_the_task_message_still_shows_the_library():
     rendered = TASK_PROMPT.format(task="write a haiku", library="  - writer_agent: write prose")
     assert "writer_agent" in rendered
     assert "write a haiku" in rendered
+
+
+# --- the capability is the only thing the generator sees, so it must be clean ---
+
+
+def test_a_capability_that_names_the_task_is_replaced_outright():
+    """Not warned about, not regenerated - replaced. Trusting it is the bug."""
+    from planner import scrub_capabilities
+
+    plan = Plan(
+        agents=[
+            spec(
+                "code_agent",
+                role="Implement the natural-language-to-SQL flow",
+                capability="Write a SQL translator with a schema validator",
+            )
+        ],
+        reasoning="r",
+    )
+    replaced = scrub_capabilities(plan, "build a flow that turns natural language into SQL")
+    assert replaced == ["code_agent"]
+    assert plan.agents[0].capability == STANDARD_AGENTS["code_agent"]
+    assert "sql" not in plan.agents[0].capability.lower()
+
+
+def test_a_clean_capability_is_left_exactly_as_written():
+    from planner import scrub_capabilities
+
+    written = "Write correct, runnable Python for whatever the task asks for."
+    plan = Plan(agents=[spec("code_agent", capability=written)], reasoning="r")
+    assert scrub_capabilities(plan, "build a flow that turns text into qr codes") == []
+    assert plan.agents[0].capability == written
+
+
+def test_an_empty_capability_is_filled_in_silently():
+    """A planner that omitted it is a slip, not something to announce."""
+    from planner import scrub_capabilities
+
+    plan = Plan(agents=[spec("summary_agent", capability="")], reasoning="r")
+    assert scrub_capabilities(plan, "condense the qr code report") == []
+    assert plan.agents[0].capability == STANDARD_AGENTS["summary_agent"]
+
+
+def test_an_invented_agent_gets_a_generic_brief_not_the_task():
+    from planner import scrub_capabilities
+
+    plan = Plan(
+        agents=[spec("schema_agent", role="design the SQL schema", capability="design the SQL schema")],
+        reasoning="r",
+    )
+    scrub_capabilities(plan, "design the SQL schema for an orders database")
+    capability = plan.agents[0].capability
+    assert "sql" not in capability.lower()
+    assert "schema" in capability.lower()  # the agent's own name survives
+    assert "task" in capability.lower()
+
+
+def test_the_role_is_untouched_because_it_is_only_ever_displayed():
+    from planner import scrub_capabilities
+
+    plan = Plan(
+        agents=[spec("code_agent", role="Implement the SQL flow", capability="write SQL")],
+        reasoning="r",
+    )
+    scrub_capabilities(plan, "implement the SQL flow")
+    assert plan.agents[0].role == "Implement the SQL flow"

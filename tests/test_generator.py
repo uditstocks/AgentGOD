@@ -97,12 +97,63 @@ def test_upstream_names_are_listed_verbatim():
 def test_prompt_carries_the_upstream_contract():
     prompt = generator.GENERATOR_BRIEF.format(
         name="summary_agent",
-        role="r",
-        instructions="i",
+        capability="Condense supplied material to the length the task names.",
         upstream_contract=generator._upstream_contract(["research_agent"]),
         packages=generator._package_rule(AgentSpec(name="summary_agent", role="r", instructions="i")),
     )
     assert '"research_agent"' in prompt
+
+
+# --- the generator is never shown today's subject -------------------------------
+
+
+def test_the_brief_carries_the_capability_and_not_the_task_specific_role():
+    """The whole reuse story: an agent cannot leak what it was never shown.
+
+    role and instructions are written for TODAY ("Implement the
+    natural-language-to-SQL conversion flow"). Handing them over while asking
+    for a subject-free agent was a contradiction the model resolved by keeping
+    the subject and reaching for a synonym.
+    """
+    assert "{capability}" in generator.GENERATOR_BRIEF
+    assert "{role}" not in generator.GENERATOR_BRIEF
+    assert "{instructions}" not in generator.GENERATOR_BRIEF
+
+    spec = AgentSpec(
+        name="code_agent",
+        role="Implement the natural-language-to-SQL conversion flow in Python",
+        instructions="Build a schema-aware SQL translator with a validator.",
+        capability="Write correct, runnable Python for whatever the task asks for.",
+    )
+    prompt = generator.GENERATOR_BRIEF.format(
+        name=spec.name,
+        capability=generator.agent_capability(spec),
+        upstream_contract=generator._upstream_contract([]),
+        packages=generator._package_rule(spec),
+    )
+    assert "whatever the task asks for" in prompt
+    for leak in ("SQL", "schema", "translator", "natural-language"):
+        assert leak not in prompt
+
+
+def test_a_spec_with_no_capability_still_generates():
+    """A caller that skipped the scrubber gets something usable, not a crash."""
+    spec = AgentSpec(name="writer_agent", role="write the piece", instructions="i")
+    assert generator.agent_capability(spec) == "write the piece"
+
+
+def test_the_agent_docstring_describes_the_capability_not_the_task():
+    """The file outlives the task, so its first line must too."""
+    spec = AgentSpec(
+        name="code_agent",
+        role="Implement the natural-language-to-SQL conversion flow",
+        instructions="i",
+        capability="Write correct, runnable Python for whatever the task asks for",
+    )
+    source = generator.assemble_agent(BODY, spec)
+    first = source.splitlines()[0]
+    assert "whatever the task asks for" in first
+    assert "SQL" not in first
 
 
 def test_the_static_policy_is_separate_from_the_per_agent_brief():

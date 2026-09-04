@@ -59,7 +59,7 @@ from library import (
     up_to_date,
 )
 from merger import merge_outputs
-from planner import AgentSpec, Plan, canonical_role, plan_agents
+from planner import AgentSpec, Plan, canonical_role, plan_agents, scrub_capabilities
 from taskgraph import dependency_closure, waves
 
 PHASES = (
@@ -387,6 +387,11 @@ def handle_task(
 
     events.phase_started(1, len(PHASES), PHASES[0])
     plan: Plan = plan_agents(task, usage=usage)
+    # The generator is shown each agent's capability and nothing else, so this
+    # is the last point at which today's subject could still reach tomorrow's
+    # agent. A capability that names it is replaced outright, not trusted.
+    for name in scrub_capabilities(plan, subject):
+        events.agent_retired(name, "its brief named this task, so a neutral one was used")
     events.plan_ready(plan)
     # The grade the planner just gave sets the effort of every call below -
     # the generated agents' own calls included, via their environment.

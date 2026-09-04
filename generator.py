@@ -406,10 +406,20 @@ Other rules:
 
 # The per-agent half: what this one agent is, what it will receive, and what
 # it may import. All of it changes between agents, so none of it is cached.
+# What the generator is shown, and the whole of it.
+#
+# `role` and `instructions` are deliberately absent. The planner writes those
+# for TODAY's task ("Implement the natural-language-to-SQL conversion flow"),
+# and handing them over while asking for a subject-free agent was a
+# contradiction the model resolved the only way it could: by keeping the
+# subject and reaching for a synonym. `sql` became "structured query", `qr`
+# became "encoded image", and every word-level guard passed.
+#
+# An agent cannot leak a subject it was never shown. That is why this brief
+# carries the capability alone - the real task arrives on stdin at runtime.
 GENERATOR_BRIEF = """Agent name: {name}
-Agent role: {role}
-Agent instructions:
-{instructions}
+What this agent does, on any task:
+{capability}
 
 {upstream_contract}
 
@@ -472,7 +482,13 @@ def _render_header() -> str:
 def _render_docstring(spec: AgentSpec | None) -> str:
     """The per-agent docstring, or a neutral one when there is no spec."""
     name = spec.name if spec is not None else "agent"
-    role = (spec.role.strip().rstrip(".") if spec is not None and spec.role else "a generated specialist")
+    # The capability, not the role: the file outlives the task it was built
+    # for, so its first line must describe what it does forever.
+    role = (
+        agent_capability(spec).strip().rstrip(".")
+        if spec is not None
+        else "a generated specialist"
+    ) or "a generated specialist"
     return _fill(AGENT_DOCSTRING).replace(_NAME_MARKER, name).replace(_ROLE_MARKER, role)
 
 
@@ -523,6 +539,16 @@ def _package_rule(spec: AgentSpec) -> str:
     )
 
 
+def agent_capability(spec: AgentSpec) -> str:
+    """The subject-free brief for one agent - the only text the generator sees.
+
+    `planner.scrub_capabilities` guarantees this is clean before generation,
+    but a caller that skipped it (a test, a script) still gets something
+    usable rather than the task-specific role.
+    """
+    return (spec.capability or "").strip() or spec.role.strip()
+
+
 def _upstream_contract(upstream: list[str]) -> str:
     if not upstream:
         return _FIRST_AGENT_CONTRACT
@@ -551,8 +577,7 @@ def generate_agent_code(
     """
     prompt = GENERATOR_BRIEF.format(
         name=spec.name,
-        role=spec.role,
-        instructions=spec.instructions,
+        capability=agent_capability(spec),
         upstream_contract=_upstream_contract(upstream or []),
         packages=_package_rule(spec),
     )
