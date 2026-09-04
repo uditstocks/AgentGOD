@@ -3,7 +3,7 @@
 <img src="assets/hero.jpg" alt="AgentGod" width="400">
 
 # AgentGod
-
+https://agent-god-landing.vercel.app/
 ### One agent that writes other agents - runs them, merges their answers, and deletes them.
 
 ![python](https://img.shields.io/badge/python-3.10%2B-334155?style=flat-square&labelColor=0d1117)
@@ -542,23 +542,6 @@ plain text automatically.
 
 One file, one responsibility. The reasoning behind every decision is in
 **[ARCHITECTURE.md](ARCHITECTURE.md)**.
-
----
-
-## Boundaries
-
-This is not pretending to be more than it is.
-
-Agents run in parallel only when the plan's own graph proves them independent;
-everything else stays strictly sequential, because an invented ordering is
-how data silently goes missing. They can look something up, but they cannot
-browse: no logging in, no clicking through a site, no filling in a form. They
-do not write to your files, run your code, or remember a previous run within
-a task.
-
-What is here is exact. What is not here has not been claimed.
-
----
 
 <div align="center">
 
