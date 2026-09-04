@@ -281,3 +281,75 @@ def test_json_payload_for_a_conversational_reply():
     outcome = main.Outcome(ok=True, kind="reply", answer="Hello.")
     payload = main._json_payload("hi", outcome)
     assert payload == {"ok": True, "task": "hi", "answer": "Hello.", "conversational": True}
+
+
+# --- the first-run bugs a real install found -----------------------------------
+
+
+def test_a_pasted_key_survives_whitespace_the_terminal_added():
+    """The root cause of a real first-run failure.
+
+    A key is one unbroken token. A newline inside it makes the HTTP header
+    invalid, so the request dies locally without reaching the API - which
+    surfaced as "could not reach the API to verify the key", a network fault
+    that was not one. The same broken key then killed the run at its first
+    real call.
+    """
+    key = "sk-ant-api03-" + "x" * 80
+    assert main._clean_key(key) == key
+    assert main._clean_key(key[:20] + "\n" + key[20:]) == key
+    assert main._clean_key(key[:20] + " " + key[20:]) == key
+    assert main._clean_key("  " + key[:30] + "\t" + key[30:] + "\r\n") == key
+
+
+def test_the_key_is_cleaned_at_every_entry_point(monkeypatch):
+    key = "sk-ant-api03-" + "y" * 80
+    monkeypatch.setattr(main.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(main, "ask", lambda _m: key[:20] + " " + key[20:])
+    assert main._read_secret("paste: ") == key
+
+
+def test_saving_the_key_creates_the_directory_it_needs(tmp_path, capsys):
+    """A fresh install has no data directory, so the very first key was lost.
+
+    Without the mkdir the write failed with ENOENT, the key was never
+    persisted, and the user was asked for it again on every single run.
+    """
+    target = tmp_path / "never" / "existed" / ".env"
+    assert not target.parent.exists()
+    main._save_key(target, "sk-ant-api03-" + "z" * 80)
+    assert target.exists()
+    assert "ANTHROPIC_API_KEY=sk-ant-" in target.read_text(encoding="utf-8")
+    # It names where it went: an installed user has no gitignore to guess at.
+    assert str(target) in capsys.readouterr().err
+
+
+def test_the_keep_policy_also_creates_its_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "_data_dir", lambda: tmp_path / "fresh")
+    main._persist_keep_always()
+    assert (tmp_path / "fresh" / ".env").read_text(encoding="utf-8").strip() == (
+        "AGENTGOD_KEEP=always"
+    )
+
+
+def test_a_headless_user_is_told_where_the_env_file_goes(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(main, "_data_dir", lambda: tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(main.sys.stdin, "isatty", lambda: False)
+    assert main._check_api_key() is False
+    assert str(tmp_path / ".env") in capsys.readouterr().err
+
+
+def test_an_unverifiable_key_is_saved_without_alarming_anyone(monkeypatch, tmp_path, capsys):
+    """Being offline says nothing about the key, so it says nothing either."""
+    monkeypatch.setattr(main, "_data_dir", lambda: tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(main.sys.stdin, "isatty", lambda: True)
+    key = "sk-ant-api03-" + "q" * 80
+    monkeypatch.setattr(main, "_read_secret", lambda _m: key)
+    monkeypatch.setattr(main, "_probe_key", lambda _k: "unreachable")
+
+    assert main._check_api_key() is True
+    captured = capsys.readouterr()
+    assert "could not reach" not in (captured.out + captured.err).lower()
+    assert key in (tmp_path / ".env").read_text(encoding="utf-8")

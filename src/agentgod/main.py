@@ -178,6 +178,19 @@ def _looks_like_anthropic_key(value: str) -> bool:
     return value.startswith("sk-ant-") and len(value) >= 24
 
 
+def _clean_key(raw: str) -> str:
+    """A pasted key with every scrap of whitespace removed.
+
+    A key is one unbroken token, so a space, tab or newline inside it can
+    only be paste damage - and an embedded newline is the worst kind, because
+    it makes the HTTP header invalid and the request dies on this machine
+    without ever reaching the API. That surfaced as "could not reach the API
+    to verify the key", which reads as a network fault and is not one; the
+    same broken key then went on to kill the run at its first real call.
+    """
+    return "".join(raw.split())
+
+
 def _read_secret(message: str) -> str | None:
     """Read a credential without echoing it, where the terminal allows.
 
@@ -189,13 +202,14 @@ def _read_secret(message: str) -> str | None:
         import getpass
 
         try:
-            return getpass.getpass(message).strip()
+            return _clean_key(getpass.getpass(message))
         except (EOFError, KeyboardInterrupt):
             _ui().blank()
             return None
         except Exception:
             pass  # odd shells; fall through to the visible prompt
-    return ask(message)
+    typed = ask(message)
+    return None if typed is None else _clean_key(typed)
 
 
 def _probe_key(key: str) -> str:
@@ -218,8 +232,15 @@ def _probe_key(key: str) -> str:
 
 
 def _save_key(env_file: Path, key: str) -> None:
-    """Write the key back to .env so this only ever happens once."""
+    """Write the key back to .env so this only ever happens once.
+
+    The directory is created first. On a fresh install nothing has written
+    to the data directory yet, so it does not exist - and without this the
+    very first key a new user pastes was refused with ENOENT and thrown
+    away, leaving them to re-enter it on every single run.
+    """
     try:
+        env_file.parent.mkdir(parents=True, exist_ok=True)
         lines = []
         if env_file.exists():
             lines = [
@@ -229,7 +250,7 @@ def _save_key(env_file: Path, key: str) -> None:
             ]
         lines.append(f"ANTHROPIC_API_KEY={key}")
         env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        _ui().success(f"Saved to {env_file.name} (gitignored).\n")
+        _ui().success(f"Saved to {env_file}\n")
     except OSError as error:
         _ui().warn(f"Could not write .env ({error}); using the key for this session only.\n")
 
@@ -262,8 +283,11 @@ def _check_api_key() -> bool:
     _ui().note("Get one at https://console.anthropic.com/settings/keys\n")
 
     if not _interactive():
-        _ui().note("Set it in .env, or as an environment variable:")
+        # An installed user has no reason to know the data directory
+        # exists, let alone where it is.
+        _ui().note("Set it as an environment variable:")
         _ui().note("  ANTHROPIC_API_KEY=sk-ant-...")
+        _ui().note(f"or put that line in {_data_dir() / '.env'}")
         return False
 
     for _ in range(3):
@@ -286,8 +310,11 @@ def _check_api_key() -> bool:
         if verdict == "rejected":
             _ui().warn("The API rejected that key - it may be revoked or mistyped. Try again.")
             continue
-        if verdict == "unreachable":
-            _ui().note("(could not reach the API to verify the key - keeping it anyway)")
+        # "unreachable" is deliberately silent now. The check exists to catch
+        # a wrong key while the user is still here to retype it; being offline
+        # says nothing about the key, and announcing it reads as a failure at
+        # the moment the product should feel like it is working. A key that
+        # really is wrong is explained by problems.py on its first use.
         _save_key(env_file, entered)
         os.environ["ANTHROPIC_API_KEY"] = entered
         return True
@@ -360,6 +387,7 @@ def _persist_keep_always() -> None:
     os.environ["AGENTGOD_KEEP"] = "always"
     env_file = _data_dir() / ".env"
     try:
+        env_file.parent.mkdir(parents=True, exist_ok=True)
         lines = []
         if env_file.exists():
             lines = [
