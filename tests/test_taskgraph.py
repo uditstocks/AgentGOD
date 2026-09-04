@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from taskgraph import (
+from agentgod.taskgraph import (
     dependency_closure,
     sanitise_dependencies,
     topological_order,

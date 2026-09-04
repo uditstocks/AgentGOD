@@ -36,13 +36,13 @@ import os
 import sys
 from typing import TYPE_CHECKING, Any
 
-from events import TaskEvents
+from .events import TaskEvents
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from executor import AgentResult, DependencyReport
-    from planner import Plan
+    from .executor import AgentResult, DependencyReport
+    from .planner import Plan
 
 RULE_WIDTH = 60
 
@@ -361,7 +361,7 @@ def make_ui(plain: bool = False, quiet: bool = False) -> PlainUI:
         # visible without restarting the process.
         importlib.invalidate_caches()
         importlib.import_module("rich")
-        from richui import RichUI, rich_console
+        from .richui import RichUI, rich_console
 
         console = rich_console()
     except Exception:

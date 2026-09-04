@@ -8,9 +8,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from codeguard import ALLOWED_PACKAGES
-from config import MAX_AGENTS, Usage, complete_structured
-from taskgraph import (
+from .codeguard import ALLOWED_PACKAGES
+from .config import MAX_AGENTS, Usage, complete_structured
+from .taskgraph import (
     sanitise_dependencies,
     topological_order,
     wire_sequential_fallback,
@@ -351,8 +351,8 @@ def plan_agents(task: str, usage: Usage | None = None) -> Plan:
     The reply is constrained to the Plan schema by the API itself, so a
     malformed plan is a request error rather than something to salvage here.
     """
-    from config import cached_system
-    from library import describe_for_planner
+    from .config import cached_system
+    from .library import describe_for_planner
 
     # The rules, the vetted package list and the standard vocabulary are
     # byte-identical on every run, so they travel as one cached system block:
@@ -400,7 +400,7 @@ def scrub_capabilities(plan: Plan, task: str) -> list[str]:
     Returns the names of the agents whose capability had to be replaced, so
     the caller can say so.
     """
-    from topicguard import task_subjects
+    from .topicguard import task_subjects
 
     banned = set(task_subjects(task))
     replaced: list[str] = []

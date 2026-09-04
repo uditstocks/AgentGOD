@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-import library
-from library import (
+from agentgod import library
+from agentgod.library import (
     catalogue,
     describe_for_planner,
     forget,

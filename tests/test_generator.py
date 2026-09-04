@@ -9,10 +9,10 @@ import sys
 
 import pytest
 
-import generator
-from codeguard import check_agent_source
-from config import USAGE_MARKER
-from planner import AgentSpec
+from agentgod import generator
+from agentgod.codeguard import check_agent_source
+from agentgod.config import USAGE_MARKER
+from agentgod.planner import AgentSpec
 
 FENCE = "`" * 3
 BODY = (
@@ -442,7 +442,7 @@ def test_the_policy_gates_refinement_on_deep():
 
 def test_a_generated_agent_may_call_deep_without_redefining_it():
     """codeguard must accept the helper's use in generated logic."""
-    from codeguard import check_agent_source
+    from agentgod.codeguard import check_agent_source
 
     body = (
         "def run(task, previous_outputs):\n"
@@ -461,7 +461,7 @@ def test_the_forbidden_word_list_names_acronyms_to_the_generator():
     acronym the generator is never warned about - which is how a code_agent
     came to carry "QR code images" in its own prompt forever.
     """
-    from topicguard import task_subjects
+    from agentgod.topicguard import task_subjects
 
     banned = task_subjects("write a python code to convert any link or text into qr code")
     assert "qr" in banned

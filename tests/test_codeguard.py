@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from codeguard import check_agent_source
+from agentgod.codeguard import check_agent_source
 
 VALID = "import json\n\n\ndef run(task, previous_outputs):\n    return 'ok'\n"
 
@@ -163,8 +163,7 @@ def test_names_that_are_only_ever_filesystem_calls_stay_banned_outright(line):
 
 def test_the_installer_and_the_import_check_share_one_list():
     """A package that installs but cannot be imported fails after the install."""
-    import codeguard
-    import executor
+    from agentgod import codeguard, executor
 
     assert executor.ALLOWED_PACKAGES is codeguard.ALLOWED_PACKAGES
     assert set(codeguard.ALLOWED_PACKAGES.values()) == set(codeguard.ALLOWED_THIRD_PARTY)
@@ -188,7 +187,7 @@ def test_a_package_nobody_vetted_is_still_refused():
 
 
 def test_every_vetted_package_is_importable_by_its_import_name():
-    from codeguard import ALLOWED_PACKAGES
+    from agentgod.codeguard import ALLOWED_PACKAGES
 
     for pip_name, import_name in ALLOWED_PACKAGES.items():
         assert check_agent_source(f"import {import_name}\n{VALID}") == [], pip_name

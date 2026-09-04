@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-import commands
-from commands import PASTE, QUIT, Command, handle, help_text, parse
-from conversation import Conversation
+from agentgod import commands
+from agentgod.commands import PASTE, QUIT, Command, handle, help_text, parse
+from agentgod.conversation import Conversation
 
 # --- parsing -------------------------------------------------------------------
 
@@ -86,7 +86,7 @@ def test_forget_without_an_argument_asks_which():
 
 @pytest.fixture
 def library_dir(tmp_path, monkeypatch):
-    import library
+    from agentgod import library
 
     monkeypatch.setattr(library, "LIBRARY_DIR", tmp_path / "agents")
     monkeypatch.setattr(library, "INDEX_PATH", tmp_path / "index.json")
@@ -152,8 +152,7 @@ def test_audit_does_not_accuse_agents_it_cannot_check(library_dir):
 
 
 def test_stats_with_nothing_on_disk_says_so(tmp_path, monkeypatch):
-    import config
-    import library
+    from agentgod import config, library
 
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(library, "INVENTORY_DIR", tmp_path / "inventory")
@@ -167,8 +166,7 @@ def test_stats_with_nothing_on_disk_says_so(tmp_path, monkeypatch):
 
 
 def test_stats_shows_the_library_and_reliability(tmp_path, monkeypatch):
-    import config
-    import library
+    from agentgod import config, library
 
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(library, "INVENTORY_DIR", tmp_path / "inventory")
@@ -188,7 +186,7 @@ def test_stats_shows_the_library_and_reliability(tmp_path, monkeypatch):
 
 
 def test_library_listing_carries_the_record(tmp_path, monkeypatch):
-    import library
+    from agentgod import library
 
     monkeypatch.setattr(library, "INVENTORY_DIR", tmp_path / "inventory")
     monkeypatch.setattr(library, "LIBRARY_DIR", tmp_path / "inventory" / "agents")
@@ -214,7 +212,7 @@ def _with_runs(tmp_path, monkeypatch, *titles):
     """Point RUNS_DIR at a temp folder holding one archive file per title."""
     import os
 
-    import config
+    from agentgod import config
 
     runs = tmp_path / "runs"
     runs.mkdir()
@@ -261,7 +259,7 @@ def test_last_reprints_the_newest_run(tmp_path, monkeypatch):
 
 
 def test_last_with_nothing_archived_says_so(tmp_path, monkeypatch):
-    import config
+    from agentgod import config
 
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "empty")
     command = parse("/last")

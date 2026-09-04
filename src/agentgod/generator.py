@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import re
 
-from codeguard import ALLOWED_PACKAGES, check_agent_source
-from config import (
+from .codeguard import ALLOWED_PACKAGES, check_agent_source
+from .config import (
     ANTHROPIC_API_URL,
     ANTHROPIC_VERSION,
     CODEGEN_ATTEMPTS,
@@ -28,9 +28,9 @@ from config import (
     cached_system,
     complete,
 )
-from executor import requirement_name
-from planner import AgentSpec
-from topicguard import check_task_is_used, check_topic_leakage, task_subjects
+from .executor import requirement_name
+from .planner import AgentSpec
+from .topicguard import check_task_is_used, check_topic_leakage, task_subjects
 
 # Placeholders filled in by _render_header(). Deliberately not str.format():
 # the header contains literal braces that .format() would choke on.

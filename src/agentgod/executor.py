@@ -19,8 +19,8 @@ from pathlib import Path
 # that lets them through. Installing a package the generated code may not
 # import is a wasted install; refusing an import for a package that installed
 # fine is a wasted run. One list makes both impossible.
-from codeguard import ALLOWED_PACKAGES
-from config import (
+from .codeguard import ALLOWED_PACKAGES
+from .config import (
     AGENT_TIMEOUT_SECONDS,
     AGENT_VENV_DIR,
     GENERATED_DIR,
@@ -28,7 +28,7 @@ from config import (
     USAGE_MARKER,
     estimate_cost,
 )
-from planner import AgentSpec
+from .planner import AgentSpec
 
 # Splits "requests>=2.31.0" / "pandas[extra]" down to "requests" / "pandas".
 _REQUIREMENT_NAME = re.compile(r"^[A-Za-z0-9._-]+")

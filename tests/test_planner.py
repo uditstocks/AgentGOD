@@ -7,10 +7,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-import planner
-from codeguard import ALLOWED_PACKAGES
-from config import MAX_AGENTS
-from planner import STANDARD_AGENTS, AgentSpec, Plan, safe_agent_name, upstream_names
+from agentgod import planner
+from agentgod.codeguard import ALLOWED_PACKAGES
+from agentgod.config import MAX_AGENTS
+from agentgod.planner import STANDARD_AGENTS, AgentSpec, Plan, safe_agent_name, upstream_names
 
 
 def spec(name: str = "research_agent", **kwargs: Any) -> AgentSpec:
@@ -153,7 +153,7 @@ def test_an_unrecognised_agent_sorts_with_the_work_not_the_review():
 
 
 def test_stage_rank_falls_back_to_the_role_when_the_name_is_invented():
-    from planner import stage_rank
+    from agentgod.planner import stage_rank
 
     assert stage_rank("zeta_agent", "gather facts about the subject") == stage_rank("research_agent")
     assert stage_rank("omega_agent", "condense it all down") == stage_rank("summary_agent")
@@ -161,7 +161,7 @@ def test_stage_rank_falls_back_to_the_role_when_the_name_is_invented():
 
 def test_canonical_role_replaces_a_task_specific_description():
     """The library index must describe a capability, not one old task."""
-    from planner import canonical_role
+    from agentgod.planner import canonical_role
 
     assert canonical_role("summary_agent", "condense the code review findings") == (
         "condense supplied material to a requested length"
@@ -279,9 +279,9 @@ def test_the_cached_policy_holds_no_volatile_text():
     each time - paying the cache-write premium and never once collecting the
     discount. Volatile text belongs in the message.
     """
-    from codeguard import ALLOWED_PACKAGES
-    from config import MAX_AGENTS
-    from planner import PLANNER_PROMPT, STANDARD_AGENTS, TASK_PROMPT, _wrap
+    from agentgod.codeguard import ALLOWED_PACKAGES
+    from agentgod.config import MAX_AGENTS
+    from agentgod.planner import PLANNER_PROMPT, STANDARD_AGENTS, TASK_PROMPT, _wrap
 
     policy = PLANNER_PROMPT.format(
         max_agents=MAX_AGENTS,
@@ -301,7 +301,7 @@ def test_the_cached_policy_holds_no_volatile_text():
 
 def test_the_task_message_still_shows_the_library():
     """Moving it out of the cache must not hide it from the planner."""
-    from planner import TASK_PROMPT
+    from agentgod.planner import TASK_PROMPT
 
     rendered = TASK_PROMPT.format(task="write a haiku", library="  - writer_agent: write prose")
     assert "writer_agent" in rendered
@@ -313,7 +313,7 @@ def test_the_task_message_still_shows_the_library():
 
 def test_a_capability_that_names_the_task_is_replaced_outright():
     """Not warned about, not regenerated - replaced. Trusting it is the bug."""
-    from planner import scrub_capabilities
+    from agentgod.planner import scrub_capabilities
 
     plan = Plan(
         agents=[
@@ -332,7 +332,7 @@ def test_a_capability_that_names_the_task_is_replaced_outright():
 
 
 def test_a_clean_capability_is_left_exactly_as_written():
-    from planner import scrub_capabilities
+    from agentgod.planner import scrub_capabilities
 
     written = "Write correct, runnable Python for whatever the task asks for."
     plan = Plan(agents=[spec("code_agent", capability=written)], reasoning="r")
@@ -342,7 +342,7 @@ def test_a_clean_capability_is_left_exactly_as_written():
 
 def test_an_empty_capability_is_filled_in_silently():
     """A planner that omitted it is a slip, not something to announce."""
-    from planner import scrub_capabilities
+    from agentgod.planner import scrub_capabilities
 
     plan = Plan(agents=[spec("summary_agent", capability="")], reasoning="r")
     assert scrub_capabilities(plan, "condense the qr code report") == []
@@ -350,7 +350,7 @@ def test_an_empty_capability_is_filled_in_silently():
 
 
 def test_an_invented_agent_gets_a_generic_brief_not_the_task():
-    from planner import scrub_capabilities
+    from agentgod.planner import scrub_capabilities
 
     plan = Plan(
         agents=[spec("schema_agent", role="design the SQL schema", capability="design the SQL schema")],
@@ -364,7 +364,7 @@ def test_an_invented_agent_gets_a_generic_brief_not_the_task():
 
 
 def test_the_role_is_untouched_because_it_is_only_ever_displayed():
-    from planner import scrub_capabilities
+    from agentgod.planner import scrub_capabilities
 
     plan = Plan(
         agents=[spec("code_agent", role="Implement the SQL flow", capability="write SQL")],

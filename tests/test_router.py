@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from router import Intent, classify, normalise
+from agentgod.router import Intent, classify, normalise
 
 # --- small talk ----------------------------------------------------------------
 

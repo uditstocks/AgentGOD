@@ -75,10 +75,10 @@ def snapshot() -> Snapshot:
     Every lookup is defended: a question about the system must still get an
     answer on an installation whose library or runs directory is unreadable.
     """
-    from config import AGENT_TIMEOUT_SECONDS, MAX_AGENTS, MODEL, RUNS_DIR
+    from .config import AGENT_TIMEOUT_SECONDS, MAX_AGENTS, MODEL, RUNS_DIR
 
     try:
-        from library import catalogue
+        from .library import catalogue
 
         entries = tuple((entry.name, entry.role, entry.uses) for entry in catalogue())
     except Exception:

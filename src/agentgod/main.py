@@ -24,9 +24,14 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import cli
+from . import cli
 
-PROJECT_DIR = Path(__file__).resolve().parent
+
+# Where user data lives (never site-packages). config decides; main obeys.
+def _data_dir():
+    from .config import DATA_DIR
+
+    return DATA_DIR
 MIN_PYTHON = (3, 10)
 QUIT_WORDS = frozenset({"quit", "exit", "q"})
 TASK_PROMPT = "What do you need done?\n> "
@@ -46,7 +51,7 @@ def _ui():
     """The session's renderer, created on first use so tests can intercept."""
     global _ACTIVE_UI
     if _ACTIVE_UI is None:
-        from ui import make_ui
+        from .ui import make_ui
 
         _ACTIVE_UI = make_ui()
     return _ACTIVE_UI
@@ -152,7 +157,7 @@ def _check_dependencies() -> bool:
         return False
 
     _ui().blank()
-    if subprocess.run(command, cwd=str(PROJECT_DIR)).returncode != 0:
+    if subprocess.run(command, cwd=str(_data_dir())).returncode != 0:
         _ui().error("\npip failed. Install them manually:\n  pip install -r requirements.txt")
         return False
 
@@ -239,7 +244,7 @@ def _check_api_key() -> bool:
     """
     from dotenv import load_dotenv
 
-    env_file = PROJECT_DIR / ".env"
+    env_file = _data_dir() / ".env"
     load_dotenv(env_file)
 
     key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -330,8 +335,8 @@ class Outcome:
 
 def _session_banner() -> None:
     """The startup screen: who this is, what it will spend, what it remembers."""
-    from config import MAX_AGENTS, MODEL, RUNS_DIR
-    from library import catalogue
+    from .config import MAX_AGENTS, MODEL, RUNS_DIR
+    from .library import catalogue
 
     try:
         run_count = sum(1 for _ in RUNS_DIR.glob("*.md")) if RUNS_DIR.is_dir() else 0
@@ -353,7 +358,7 @@ def _keep_policy_from_env() -> str:
 def _persist_keep_always() -> None:
     """Record 'always keep' in .env, so the question never comes back."""
     os.environ["AGENTGOD_KEEP"] = "always"
-    env_file = PROJECT_DIR / ".env"
+    env_file = _data_dir() / ".env"
     try:
         lines = []
         if env_file.exists():
@@ -379,7 +384,7 @@ def ask_keep(result, policy: str = "ask", interactive: bool | None = None) -> li
     """
     if not result.pending:
         return []
-    from library import remember
+    from .library import remember
 
     def store() -> list[str]:
         return [
@@ -448,14 +453,14 @@ def cleanup(agent_paths: list[Path]) -> None:
     """
     if not agent_paths:
         return
-    from inventory import delete_agents
+    from .inventory import delete_agents
 
     delete_agents(agent_paths)
 
 
 def archive(task: str, result) -> Path | None:
     """Write the run to runs/, never letting a broken archive lose the answer."""
-    from runlog import save_run
+    from .runlog import save_run
 
     try:
         return save_run(task, result)
@@ -471,8 +476,8 @@ def answer_directly(text: str) -> str | None:
     those agents, knowing nothing about AgentGod, described one that does not
     exist.
     """
-    import identity
-    from router import Intent, classify
+    from . import identity
+    from .router import Intent, classify
 
     intent = classify(text)
     if intent is Intent.GREETING:
@@ -486,7 +491,7 @@ def answer_directly(text: str) -> str | None:
     if intent is Intent.IDENTITY:
         return identity.describe_identity()
     if intent is Intent.HELP:
-        from commands import help_text
+        from .commands import help_text
 
         return help_text()
     return None
@@ -500,7 +505,7 @@ def prepare(task: str, conversation=None) -> tuple[str, list[str], str]:
     Both steps are announced by the caller: reading a file sends it to a model
     provider, and folding in context changes what the answer is about.
     """
-    from attachments import attach
+    from .attachments import attach
 
     attached = attach(task)
     labels = [item.label() for item in attached.files]
@@ -523,18 +528,18 @@ def clarify(task: str, conversation=None, allow_prompt: bool = True):
     An empty reply means "just get on with it", which is a perfectly good
     answer and is not asked about twice.
     """
-    from config import CLARIFY, Usage
+    from .config import CLARIFY, Usage
 
     usage = Usage()
     if not allow_prompt or not _interactive() or CLARIFY == "off":
         return task, usage
     if conversation is not None:
-        from conversation import is_follow_up
+        from .conversation import is_follow_up
 
         if is_follow_up(task):
             return task, usage
 
-    from judgment import clarifying_question
+    from .judgment import clarifying_question
 
     try:
         with _ui().status("sizing up the task..."):
@@ -568,7 +573,7 @@ def run_task(
     filled with what happened so callers with their own contract (--json,
     exit codes) do not have to re-derive it from the printed output.
     """
-    from orchestrator import handle_task
+    from .orchestrator import handle_task
 
     ui = _ui()
     outcome = outcome if outcome is not None else Outcome()
@@ -610,7 +615,7 @@ def run_task(
             try:
                 ui.run_succeeded(result, saved)
             except Exception:
-                from ui import PlainUI
+                from .ui import PlainUI
 
                 PlainUI().run_succeeded(result, saved)
         if conversation is not None:
@@ -625,7 +630,7 @@ def run_task(
         ui.run_cancelled()
         outcome.cancelled = True
     except Exception as error:  # one failed task must not end the session
-        from problems import explain
+        from .problems import explain
 
         try:
             problem = explain(error)
@@ -783,7 +788,7 @@ def _json_payload(task: str, outcome: Outcome) -> dict:
 
 def _run_command(verb: str, argument: str) -> int:
     """One free command - `agentgod library` - straight to the handler and out."""
-    from commands import Command, handle
+    from .commands import Command, handle
 
     _ui().reply(handle(Command(name=verb, argument=argument)))
     return cli.EXIT_OK
@@ -795,7 +800,7 @@ def _run_one_shot(invocation: cli.Invocation) -> int:
 
     # A slash command as the one-shot task is a question about the session,
     # answered free - never a billed pipeline run.
-    from commands import PASTE, QUIT, handle, parse
+    from .commands import PASTE, QUIT, handle, parse
 
     command = parse(task)
     if command is not None:
@@ -825,9 +830,9 @@ def _run_one_shot(invocation: cli.Invocation) -> int:
 
 def _session(invocation: cli.Invocation) -> int:
     """The interactive loop: the product most people meet."""
-    from commands import PASTE, QUIT, handle, parse
-    from conversation import Conversation
-    from router import Intent, classify
+    from .commands import PASTE, QUIT, handle, parse
+    from .conversation import Conversation
+    from .router import Intent, classify
 
     _session_banner()
     conversation = Conversation()

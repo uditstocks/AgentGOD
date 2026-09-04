@@ -7,8 +7,8 @@ from datetime import datetime
 
 import pytest
 
-import runlog
-from runlog import render, save_run, slugify
+from agentgod import runlog
+from agentgod.runlog import render, save_run, slugify
 
 
 @dataclass
@@ -135,7 +135,7 @@ def test_save_run_returns_none_instead_of_raising(runs_dir, monkeypatch):
 def test_the_record_carries_the_runs_story():
     from types import SimpleNamespace
 
-    from runlog import render
+    from agentgod.runlog import render
 
     result = SimpleNamespace(
         response="the answer",
@@ -161,7 +161,7 @@ def test_the_record_carries_the_runs_story():
 def test_a_caveat_is_recorded_where_a_reader_will_see_it():
     from types import SimpleNamespace
 
-    from runlog import render
+    from agentgod.runlog import render
 
     result = SimpleNamespace(
         response="the answer",

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/hero.jpg" alt="AgentGod" width="400">
+<img src="https://raw.githubusercontent.com/uditstocks/AgentGOD/master/assets/hero.jpg" alt="AgentGod" width="400">
 
 # AgentGod
 https://agent-god-landing.vercel.app/
@@ -41,7 +41,7 @@ No agent exists before you ask for it. Most no longer exist a minute later.
 ```bash
 git clone https://github.com/uditstocks/AgentGOD.git
 cd AgentGOD
-pip install -e .[rich]      # installs the `agentgod` command
+pip install AgentGOD
 ```
 
 Then run it - it will ask for your key the first time (input hidden,

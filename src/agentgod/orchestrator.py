@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
-from config import (
+from .config import (
     AGENT_REPAIR_ATTEMPTS,
     MAX_PARALLEL_AGENTS,
     TASK_REVISIONS,
@@ -35,9 +35,9 @@ from config import (
     effort_for,
     model_for,
 )
-from council import deliberate, should_convene
-from events import TaskEvents
-from executor import (
+from .council import deliberate, should_convene
+from .events import TaskEvents
+from .executor import (
     AgentResult,
     DependencyReport,
     execute_agent,
@@ -46,9 +46,9 @@ from executor import (
     is_transient,
     save_agent_file,
 )
-from generator import generate_agent_code
-from judgment import judge, revision_task, should_judge
-from library import (
+from .generator import generate_agent_code
+from .judgment import judge, revision_task, should_judge
+from .library import (
     forget,
     lookup,
     record_outcome,
@@ -58,9 +58,9 @@ from library import (
     reusable,
     up_to_date,
 )
-from merger import merge_outputs
-from planner import AgentSpec, Plan, canonical_role, plan_agents, scrub_capabilities
-from taskgraph import dependency_closure, waves
+from .merger import merge_outputs
+from .planner import AgentSpec, Plan, canonical_role, plan_agents, scrub_capabilities
+from .taskgraph import dependency_closure, waves
 
 PHASES = (
     "Planning agents",

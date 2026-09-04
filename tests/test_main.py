@@ -6,8 +6,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-import library
-import main
+from agentgod import library, main
 
 
 @dataclass
@@ -168,7 +167,7 @@ def test_ask_strips_stdin_noise(monkeypatch, raw):
 
 
 def test_key_prompt_refuses_non_interactive_stdin(monkeypatch, tmp_path):
-    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+    monkeypatch.setattr(main, "_data_dir", lambda: tmp_path)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(main.sys.stdin, "isatty", lambda: False)
 
@@ -181,7 +180,7 @@ def test_key_prompt_refuses_non_interactive_stdin(monkeypatch, tmp_path):
 
 
 def test_key_prompt_rejects_text_that_is_not_a_key(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+    monkeypatch.setattr(main, "_data_dir", lambda: tmp_path)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(main.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(main, "_read_secret", lambda _message: "discard")
@@ -192,7 +191,7 @@ def test_key_prompt_rejects_text_that_is_not_a_key(monkeypatch, tmp_path, capsys
 
 
 def test_key_prompt_saves_a_plausible_key(monkeypatch, tmp_path):
-    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+    monkeypatch.setattr(main, "_data_dir", lambda: tmp_path)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(main.sys.stdin, "isatty", lambda: True)
     entered = "sk-ant-api03-" + "a" * 64
@@ -204,7 +203,7 @@ def test_key_prompt_saves_a_plausible_key(monkeypatch, tmp_path):
 
 def test_a_rejected_key_gets_another_attempt(monkeypatch, tmp_path, capsys):
     """The API saying 401 on a pasted key re-prompts instead of persisting it."""
-    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+    monkeypatch.setattr(main, "_data_dir", lambda: tmp_path)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(main.sys.stdin, "isatty", lambda: True)
     keys = iter(["sk-ant-revoked-" + "a" * 32, "sk-ant-good-" + "b" * 32])
@@ -218,7 +217,7 @@ def test_a_rejected_key_gets_another_attempt(monkeypatch, tmp_path, capsys):
 
 def test_a_malformed_env_key_no_longer_sails_through(monkeypatch, tmp_path, capsys):
     """A junk key hand-edited into .env used to pass preflight and die mid-run."""
-    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+    monkeypatch.setattr(main, "_data_dir", lambda: tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-proj-this-is-an-openai-key")
     monkeypatch.setattr(main.sys.stdin, "isatty", lambda: False)
     assert main._check_api_key() is False
@@ -251,7 +250,7 @@ def test_the_drain_never_fires_off_a_terminal(monkeypatch):
 
 
 def test_a_slash_command_as_the_one_shot_task_never_bills(monkeypatch, capsys):
-    import cli
+    from agentgod import cli
 
     def explode(*args, **kwargs):  # pragma: no cover - must never run
         raise AssertionError("a slash command must not start the pipeline")
@@ -266,7 +265,7 @@ def test_a_slash_command_as_the_one_shot_task_never_bills(monkeypatch, capsys):
 
 
 def test_json_payload_for_a_failure_carries_the_translation():
-    from problems import Problem
+    from agentgod.problems import Problem
 
     outcome = main.Outcome(
         error=RuntimeError("boom"),

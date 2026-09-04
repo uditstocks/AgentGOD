@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from config import COUNCIL, Usage, complete, complete_structured, model_for
+from .config import COUNCIL, Usage, complete, complete_structured, model_for
 
 # How much of the answer the critic reads. Same reasoning as the judge's cap:
 # a critic that reads a 40 KB answer costs more than the run it is checking.

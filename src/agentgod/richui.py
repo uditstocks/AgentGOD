@@ -33,13 +33,13 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from ui import HELP_ENVIRONMENT, HELP_USAGE, PlainUI, first_line
+from .ui import HELP_ENVIRONMENT, HELP_USAGE, PlainUI, first_line
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from executor import AgentResult, DependencyReport
-    from planner import Plan
+    from .executor import AgentResult, DependencyReport
+    from .planner import Plan
 
 THEME = Theme(
     {
@@ -536,7 +536,7 @@ class RichUI(PlainUI):
             stats += f" · graded {complexity}"
         summary.add_row("", "run", Text(stats, style="dim"))
         if saved is not None:
-            from ui import display_path
+            from .ui import display_path
 
             summary.add_row("", "saved", Text(display_path(saved), style="dim"))
         else:

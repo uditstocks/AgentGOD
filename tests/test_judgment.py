@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-import judgment
-from judgment import Clarification, Verdict, clarifying_question, judge, revision_task
+from agentgod import judgment
+from agentgod.judgment import Clarification, Verdict, clarifying_question, judge, revision_task
 
 
 def fake_reply(monkeypatch, reply):
@@ -54,7 +54,7 @@ def test_an_empty_task_is_never_worth_a_question(monkeypatch):
 
 
 def test_asking_is_billed(monkeypatch):
-    from config import Usage
+    from agentgod.config import Usage
 
     fake_reply(monkeypatch, Clarification(question="Which language?"))
     usage = Usage()

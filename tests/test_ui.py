@@ -14,10 +14,10 @@ from typing import Any
 
 import pytest
 
-import ui as ui_module
-from events import TaskEvents
-from executor import AgentResult, DependencyReport
-from ui import PlainUI, first_line, make_ui
+from agentgod import ui as ui_module
+from agentgod.events import TaskEvents
+from agentgod.executor import AgentResult, DependencyReport
+from agentgod.ui import PlainUI, first_line, make_ui
 
 
 @dataclass
@@ -207,7 +207,7 @@ def rich_surface():
 
     from rich.console import Console
 
-    from richui import THEME, RichUI
+    from agentgod.richui import THEME, RichUI
 
     buffer = io.StringIO()
     console = Console(file=buffer, force_terminal=True, width=100, theme=THEME)
@@ -266,7 +266,7 @@ def test_rich_activity_spinner_is_cached_so_it_animates():
     pytest.importorskip("rich")
     from rich.padding import Padding
 
-    from richui import GLYPHS, _Board
+    from agentgod.richui import GLYPHS, _Board
 
     board = _Board(GLYPHS)
     first = board._activity()
@@ -353,7 +353,7 @@ def test_quiet_mode_never_silences_errors(capsys):
 
 
 def test_a_translated_failure_leads_with_the_headline(capsys):
-    from problems import Problem
+    from agentgod.problems import Problem
 
     PlainUI().run_failed(
         RuntimeError("Error code: 401 - {...}"),
@@ -391,7 +391,7 @@ def test_first_run_welcome_suggests_concrete_tasks(capsys):
 def test_display_path_prefers_relative(tmp_path, monkeypatch):
     from pathlib import Path
 
-    from ui import display_path
+    from agentgod.ui import display_path
 
     monkeypatch.chdir(tmp_path)
     inside = tmp_path / "runs" / "x.md"

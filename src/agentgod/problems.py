@@ -58,7 +58,7 @@ def explain(error: BaseException) -> Problem:
     user can actually change. The fallback still explains itself instead of
     printing a bare class name.
     """
-    from config import MODEL
+    from .config import MODEL
 
     text = str(error)
     technical = _first_line(text)

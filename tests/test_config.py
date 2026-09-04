@@ -10,8 +10,8 @@ import threading
 
 import pytest
 
-import config
-from config import Usage, effort_for
+from agentgod import config
+from agentgod.config import Usage, effort_for
 
 # --- the adaptive effort dial ---------------------------------------------------
 
@@ -84,7 +84,7 @@ def test_merge_still_folds_totals_in():
 
 
 def test_cached_system_marks_an_ephemeral_breakpoint():
-    from config import cached_system
+    from agentgod.config import cached_system
 
     blocks = cached_system("the standing rules")
     assert blocks == [
@@ -100,7 +100,7 @@ def test_cached_system_marks_an_ephemeral_breakpoint():
 
 
 def test_cache_tokens_are_priced_apart_from_plain_input(monkeypatch):
-    from config import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER, estimate_cost
+    from agentgod.config import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER, estimate_cost
 
     monkeypatch.setattr(config, "MODEL", "claude-sonnet-5")
     plain = estimate_cost(1000, 0)
@@ -154,7 +154,7 @@ def test_a_cached_run_names_what_it_reused():
 
 
 def test_mechanical_checks_always_run_on_the_fast_model(monkeypatch):
-    from config import model_for
+    from agentgod.config import model_for
 
     monkeypatch.setattr(config, "FAST_MODEL", "claude-haiku-4-5")
     monkeypatch.setattr(config, "MODEL", "claude-sonnet-5")
@@ -166,7 +166,7 @@ def test_mechanical_checks_always_run_on_the_fast_model(monkeypatch):
 
 
 def test_real_work_rises_to_the_deep_model_only_for_deep_tasks(monkeypatch):
-    from config import model_for
+    from agentgod.config import model_for
 
     monkeypatch.setattr(config, "MODEL", "claude-sonnet-5")
     monkeypatch.setattr(config, "DEEP_MODEL", "claude-opus-5")
@@ -178,7 +178,7 @@ def test_real_work_rises_to_the_deep_model_only_for_deep_tasks(monkeypatch):
 
 def test_the_deep_model_is_the_workhorse_unless_asked_for(monkeypatch):
     """Nothing changes for anyone who never sets DEEP_MODEL."""
-    from config import model_for
+    from agentgod.config import model_for
 
     monkeypatch.setattr(config, "MODEL", "claude-sonnet-5")
     monkeypatch.setattr(config, "DEEP_MODEL", "claude-sonnet-5")
@@ -202,7 +202,7 @@ def test_an_unpriced_model_leaves_the_cost_unknown(monkeypatch):
 
 def test_the_effort_dial_is_only_sent_to_models_that_take_it():
     """Haiku rejects output_config.effort with a 400 - verified against the API."""
-    from config import supports_effort
+    from agentgod.config import supports_effort
 
     assert supports_effort("claude-sonnet-5") is True
     assert supports_effort("claude-opus-5") is True

@@ -8,8 +8,8 @@ secret.
 
 from __future__ import annotations
 
-import attachments
-from attachments import MAX_FILES, attach, find_references
+from agentgod import attachments
+from agentgod.attachments import MAX_FILES, attach, find_references
 
 
 def write(root, name, text="hello world"):

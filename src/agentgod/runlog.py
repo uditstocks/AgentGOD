@@ -13,7 +13,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from config import MODEL, RUNS_DIR
+from .config import MODEL, RUNS_DIR
 
 # Task text is user input and becomes part of a filename, so it is reduced to
 # a safe slug the same way agent names are.

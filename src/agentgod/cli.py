@@ -27,7 +27,7 @@ import argparse
 import sys
 from dataclasses import dataclass
 
-__version__ = "0.2.0"
+__version__ = "0.1.0"
 
 EXIT_OK = 0
 EXIT_FAILURE = 1

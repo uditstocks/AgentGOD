@@ -8,8 +8,8 @@ is about honesty: the numbers must be read, and the limits must be present.
 
 from __future__ import annotations
 
-import identity
-from identity import (
+from agentgod import identity
+from agentgod.identity import (
     LIMITS,
     SKILLS,
     Snapshot,
@@ -91,7 +91,7 @@ def test_the_greeting_tells_the_user_what_to_type_next():
 
 
 def test_snapshot_reads_the_configuration():
-    from config import MAX_AGENTS, MODEL
+    from agentgod.config import MAX_AGENTS, MODEL
 
     state = snapshot()
     assert state.model == MODEL
@@ -100,7 +100,7 @@ def test_snapshot_reads_the_configuration():
 
 def test_snapshot_survives_an_unreadable_library(monkeypatch):
     """A question about the system must still get an answer on a broken install."""
-    import library
+    from agentgod import library
 
     def explode():
         raise OSError("disk gone")

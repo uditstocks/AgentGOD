@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from config import MAX_CHARS_PER_INPUT, Usage, complete
+from .config import MAX_CHARS_PER_INPUT, Usage, complete
 
 MERGER_PROMPT = """You are the coordinator of a multi-agent system.
 Several specialized agents each completed one part of the user's task.

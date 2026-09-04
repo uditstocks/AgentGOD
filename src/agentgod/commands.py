@@ -82,7 +82,7 @@ def help_text() -> str:
 
 
 def _library_text() -> str:
-    from library import catalogue
+    from .library import catalogue
 
     entries = catalogue()
     if not entries:
@@ -115,8 +115,8 @@ def _record(entry) -> str:
 
 def _stats_text() -> str:
     """The lifetime dashboard, entirely from disk - nothing here costs a call."""
-    from config import RUNS_DIR
-    from library import catalogue
+    from .config import RUNS_DIR
+    from .library import catalogue
 
     entries = catalogue()
     try:
@@ -153,7 +153,7 @@ def _stats_text() -> str:
 
 
 def _forget_text(name: str) -> str:
-    from library import forget
+    from .library import forget
 
     if not name:
         return f"Which one? `{PREFIX}forget <agent>` - see `{PREFIX}library`."
@@ -163,7 +163,7 @@ def _forget_text(name: str) -> str:
 
 
 def _audit_text() -> str:
-    from library import audit, catalogue
+    from .library import audit, catalogue
 
     checked = [entry for entry in catalogue() if entry.built_for]
     unchecked = [entry.name for entry in catalogue() if not entry.built_for]
@@ -197,7 +197,7 @@ def _audit_text() -> str:
 
 def _archived_runs() -> list:
     """Every archived run, most recent first."""
-    from config import RUNS_DIR
+    from .config import RUNS_DIR
 
     try:
         return sorted(RUNS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)

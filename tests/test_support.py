@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-import inventory
-import merger
-from config import MAX_CHARS_PER_INPUT, Usage, response_text
+from agentgod import inventory, merger
+from agentgod.config import MAX_CHARS_PER_INPUT, Usage, response_text
 
 # --- M10: an LLM reply may be a string or a list of content blocks --------------
 
