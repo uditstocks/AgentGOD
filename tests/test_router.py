@@ -100,8 +100,10 @@ def test_help_questions(text):
         "what is todays date",
     ],
 )
-def test_requests_for_live_readings(text):
-    assert classify(text) is Intent.LIVE_DATA
+def test_requests_for_live_readings_are_work_not_refusals(text):
+    """These used to be short-circuited with 'I have no internet'. Now an
+    agent can look them up, so they belong in the pipeline like any task."""
+    assert classify(text) is Intent.TASK
 
 
 # --- real work must survive every rule above -----------------------------------
@@ -160,3 +162,22 @@ def test_trailing_time_words_survive():
 def test_intent_is_task_reports_itself():
     assert Intent.TASK.is_task
     assert not Intent.GREETING.is_task
+
+
+# --- acknowledgements: a nod must never bill a pipeline run --------------------
+
+
+@pytest.mark.parametrize(
+    "text", ["ok", "okay", "yes", "yep", "no", "hmm", "alright", "acha", "theek hai", "okkk"]
+)
+def test_bare_acknowledgements_are_not_work(text):
+    assert classify(text) is Intent.ACKNOWLEDGEMENT
+
+
+def test_an_acknowledgement_inside_an_instruction_stays_work():
+    assert classify("ok now write the summary in French") is Intent.TASK
+    assert classify("no code comments in the output please") is Intent.TASK
+
+
+def test_ok_thanks_is_still_thanks():
+    assert classify("ok thanks") is Intent.THANKS

@@ -28,11 +28,11 @@ class Intent(str, Enum):
     TASK = "task"
     GREETING = "greeting"
     THANKS = "thanks"
+    ACKNOWLEDGEMENT = "acknowledgement"
     FAREWELL = "farewell"
     CAPABILITY = "capability"
     IDENTITY = "identity"
     HELP = "help"
-    LIVE_DATA = "live_data"
 
     @property
     def is_task(self) -> bool:
@@ -119,10 +119,25 @@ _FAREWELLS = frozenset(
     }
 )
 
+# Bare acknowledgements. Each of these used to become a five-phase pipeline
+# run - a planner call, a generated agent, a merge - to answer "ok". They are
+# a person nodding, and the only right reply is to stand ready for the next
+# thing. Words that also carry instruction ("go", "continue") are absent on
+# purpose: those belong to the conversation module's follow-up rules.
+_ACKNOWLEDGEMENTS = frozenset(
+    {
+        "ok", "okay", "kk", "yes", "yep", "yup", "yeah", "ya", "no", "nope",
+        "nah", "hmm", "hm", "mm", "mmm", "alright", "all right", "fine",
+        "right", "i see", "oh", "oh ok", "oh okay", "ah", "ah ok", "acha",
+        "accha", "achha", "thik hai", "theek hai", "haan", "han", "sahi hai",
+    }
+)
+
 # Collapsed forms, so the elongations people actually type still land.
 _GREETINGS_FLAT = frozenset(_flatten(phrase) for phrase in _GREETINGS)
 _THANKS_FLAT = frozenset(_flatten(phrase) for phrase in _THANKS)
 _FAREWELLS_FLAT = frozenset(_flatten(phrase) for phrase in _FAREWELLS)
+_ACKNOWLEDGEMENTS_FLAT = frozenset(_flatten(phrase) for phrase in _ACKNOWLEDGEMENTS)
 
 
 def _anchored(*patterns: str) -> list[re.Pattern[str]]:
@@ -192,35 +207,6 @@ _HELP_PATTERNS = _anchored(
     r"usage",
     r"commands",
 )
-
-# Questions whose only correct answer is a value this program cannot see.
-# Deliberately narrow: it fires on a request for a live reading, never on
-# "write a report on current AI trends", which is real, answerable work.
-_LIVE_SUBJECT = (
-    r"(?:stock|share|market)? ?price|stock|shares?|weather|temperature|forecast|"
-    r"news|headlines|scores?|rates?|exchange rate|time|date|day|traffic|standings"
-)
-_LIVE_QUALIFIER = (
-    r"(?:today|todays|now|right now|current|currently|latest|live|"
-    r"at the moment|this (?:morning|evening|week))"
-)
-
-_LIVE_DATA_PATTERNS = [
-    # "what is the stock price of itc today", "current weather in delhi"
-    re.compile(
-        r"^(?:what(?:s| is| are)?|hows?|tell me) .*\b(?:" + _LIVE_SUBJECT
-        + r")\b.*\b" + _LIVE_QUALIFIER + r"\b"
-    ),
-    re.compile(
-        r"^(?:what(?:s| is| are)?|hows?|tell me) .*\b" + _LIVE_QUALIFIER
-        + r"\b.*\b(?:" + _LIVE_SUBJECT + r")\b"
-    ),
-    # "what time is it", "what is todays date"
-    re.compile(r"^what(?:s| is)? (?:the )?(?:time|date|day)(?: is it| today| right now| now)?$"),
-    re.compile(r"^what time is it"),
-    # "itc share price today"
-    re.compile(r"^[\w\s]{0,40}\b(?:share|stock) price\b.*\b" + _LIVE_QUALIFIER + r"\b"),
-]
 
 # Verbs that turn a sentence into an instruction. Their presence means the
 # user wants work done, whatever else the sentence happens to contain - the
@@ -300,6 +286,8 @@ def classify(text: str) -> Intent:
         return Intent.THANKS
     if flattened in _FAREWELLS_FLAT:
         return Intent.FAREWELL
+    if flattened in _ACKNOWLEDGEMENTS_FLAT:
+        return Intent.ACKNOWLEDGEMENT
 
     if _matches(_HELP_PATTERNS, normalised):
         return Intent.HELP
@@ -307,8 +295,6 @@ def classify(text: str) -> Intent:
         return Intent.CAPABILITY
     if _matches(_IDENTITY_PATTERNS, normalised):
         return Intent.IDENTITY
-    if _matches(_LIVE_DATA_PATTERNS, normalised):
-        return Intent.LIVE_DATA
 
     if _looks_like_a_question_about_us(words):
         return Intent.CAPABILITY

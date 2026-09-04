@@ -75,12 +75,12 @@ def test_nothing_referenced_means_nothing_touched(tmp_path):
 
 def test_secrets_are_refused_even_when_named(tmp_path):
     """An API key must not be uploaded to a model provider by accident."""
-    write(tmp_path, ".env", "OPENROUTER_API_KEY=sk-or-secret")
+    write(tmp_path, ".env", "ANTHROPIC_API_KEY=sk-ant-secret")
 
     result = attach("what is in @.env", tmp_path)
 
     assert not result.any_read
-    assert "sk-or-secret" not in result.task
+    assert "sk-ant-secret" not in result.task
     assert "secret" in result.files[0].problem
 
 

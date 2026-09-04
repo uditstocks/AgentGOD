@@ -1,5 +1,343 @@
 # Changelog
 
+## An acronym is a subject - 2026-09-03
+
+A `code_agent` built for "convert any link or text into qr code" kept the
+words "QR code images" in its own prompt, passed every reuse check, and then
+answered an unrelated question about natural-language-to-SQL with a QR-code
+generator. The merger, handed that output, told the user about it.
+
+- **topicguard: noise is decided by vocabulary, never by length.** The subject
+  extractor required four letters, on the theory that short words are noise.
+  They are not - the noise words are already named in the craft and connective
+  vocabularies, and what the length rule actually threw away was the most
+  subject-specific tokens a task can carry: `qr`, `ai`, `ml`, `sql`, `3d`.
+  The minimum is now two letters and both vocabularies do the filtering, so
+  `how`, `one` and `you` are still dropped while an acronym survives.
+- **This heals existing libraries with no manual step.** `reusable()` runs on
+  every lookup, so an agent kept under the old guard is refused, retired and
+  rebuilt by the next task that reaches for it - no migration, no `/forget`.
+  `/audit` reports them if you want to look first.
+- **The merger never narrates the machinery.** An output that is off-topic or
+  about something the user never asked for is ignored outright: no "an
+  unrelated script was mistakenly produced", no apology, no report on how the
+  work went. It is also told that a plan for code is not code when code was
+  what was asked for.
+- 631 tests (was 624), ruff clean, pyright 0 errors.
+
+## A real command line, and errors that speak English - 2026-09-03
+
+The engine was already good. This release is about everything around it: the
+way you invoke it, what it prints, where that print goes, and what it says
+when something breaks.
+
+### The command line is a contract now
+
+- New `cli.py`: a real argparse surface. A **positional task**
+  (`agentgod "write a haiku"`), `-` to read the task from stdin, `--version`,
+  `-q/--quiet`, `--json`, per-invocation `--model` / `--effort` /
+  `--council`, and `--keep` / `--discard` / `--no-input` for scripts.
+  `--task` keeps its old meaning - everything after it is task text, never a
+  flag - so a task may contain the word `--json` safely.
+- **Stable exit codes**: 0 succeeded, 1 failed, 2 bad usage, 130 interrupted.
+  A mistyped flag no longer falls into an interactive session a CI job would
+  hang on.
+- **Free verbs**: `agentgod library|stats|history|audit|forget|last` answer
+  from local disk and skip the API-key check entirely - asking for a
+  credential to list your own files was absurd. A slash command typed as a
+  one-shot task is routed to the same free handler instead of billing a
+  full pipeline run for it.
+- **Installable**: `pyproject.toml` gained a build system, dependencies and
+  `[project.scripts]`, so `pip install -e .[rich]` puts `agentgod` on the
+  PATH. `python main.py` still works identically.
+
+### The Unix stream contract
+
+- The **answer is stdout; everything else is not.** When stdout is not a
+  terminal, all narration moves to stderr, so `agentgod "..." > answer.md`
+  captures the answer and nothing else. Errors and warnings always go to
+  stderr and always survive `--quiet`.
+- `--json` emits one object: answer, complexity grade, per-agent outcome,
+  what was kept, failures, revisions, council verdict, cost breakdown,
+  duration, archive path.
+
+### Failures that a person can act on
+
+- New `problems.py` translates every failure into a headline plus a next
+  step: a rejected key names `ANTHROPIC_API_KEY`, `.env` and the console
+  URL; a rate limit says wait; an unknown model names the `MODEL` setting;
+  an every-agent-failed run reports the *shared* cause (all timed out, all
+  refused) rather than four copies of it. The raw SDK text is kept, dimmed,
+  underneath - never the headline.
+- **The key is checked before it can waste a run**: the shape check now
+  applies to keys loaded from `.env` too (a hand-edited junk value used to
+  sail through preflight and die mid-run as a raw 401). Pasting a key is
+  hidden with `getpass`, verified against the API, and a slip re-prompts up
+  to three times instead of exiting the process.
+- **A paid answer is never thrown away.** If the council or the judge
+  crashes after the merge, the answer is delivered with a visible
+  "delivered unchecked" caveat instead of the whole task being reported as
+  failed.
+
+### Less waiting, less spend
+
+- The pre-run clarifying question now runs at `low` effort behind a live
+  status spinner, is skipped for follow-ups (the previous exchange *is* the
+  disambiguation), and can be turned off with `CLARIFY=off`. The seconds of
+  dead silence after the first Enter are gone.
+- **A single-agent run no longer pays a merge call** to restate its own
+  answer; the judge still reads it back.
+- **A judged miss is closed cheaply first**: one re-merge with the gap named,
+  and only if that still falls short does the whole team run again.
+- **Infrastructure failures stop being treated as code bugs.** A 429 or a
+  timeout no longer burns codegen calls rewriting working code: a transient
+  error re-runs the same file once, and anything else environmental stops
+  with an honest "not a code problem" note.
+- The planner's rules and the generator's contract now travel as **cached
+  system blocks**, so repeat runs re-read them at cache price.
+- Ctrl-C during a wave cancels queued agents immediately instead of draining
+  the pool, and says plainly that a call already in flight will still bill.
+
+### The conversation, and the things you already paid for
+
+- Bare acknowledgements ("ok", "yes", "hmm", "acha") are answered for free
+  instead of planning a five-phase run. Corrections ("that's wrong", "you
+  missed the risks") and elaborations ("tell me more", "go deeper") are
+  recognised as follow-ups and carry the previous exchange with them.
+- **Pasting a paragraph is one task**, not one billed run per line with the
+  leftovers answering the keep prompt.
+- The keep prompt accepts `y/n`, shows its default, and takes `always` -
+  which persists to `.env` so it never asks again. Headless runs keep by
+  default; `--keep` / `--discard` / `AGENTGOD_KEEP` make it explicit.
+- **`/last`** reprints the newest archived answer and **`/history`** is
+  numbered, so `/history 3` reopens that run. The archive itself now records
+  why a run cost what it did: grade, reuse, council, revisions, caveats.
+- Contextual hints teach follow-ups after the first answer and `/library`
+  after the first keep; `identity.py` no longer claims agents never run in
+  parallel.
+
+### Proof
+
+- 599 tests (was 526), ruff clean, pyright 0 errors. New suites for the CLI
+  contract, the failure translator, the stream split, the paste burst, the
+  cheap-revision path and the environmental-failure rules.
+
+## It thinks in graphs, spends effort where it matters, and argues with itself - 2026-08-31
+
+The plan is no longer a queue, the effort is no longer flat, and the answer
+no longer leaves the building unchallenged.
+
+### The plan is a graph, and independence runs in parallel
+
+- New `taskgraph.py`. The planner now declares **`depends_on`** per agent, and
+  the plan becomes a real dependency DAG: sanitised (self and unknown
+  references dropped), cycle-proof (a cycle is broken, never obeyed), and
+  topologically ordered so list order and graph order always agree. A plan
+  that declares nothing falls back to the old sequential chain - the one
+  wiring that is always safe.
+- The executor runs the graph in **waves**: everything in a wave has all of
+  its inputs before the wave starts, so a wave's agents run at the same time
+  on a thread pool - parallelism exists exactly where the graph proves it
+  changes nothing about the data each agent sees. Chains still run as chains.
+  `MAX_PARALLEL_AGENTS` is the ceiling; `1` disables it.
+- Each agent receives **exactly its dependency closure** - its declared
+  dependencies and theirs, never "whatever happened to finish first" - and
+  the generator writes that exact contract into the agent's prompt.
+- **Code generation is parallel too.** Newly planned agents are all written at
+  once; their generation calls share nothing. This was the most expensive
+  phase of a run, and independence makes it the fastest.
+- `Usage` is now thread-safe, so parallel calls cannot under-bill the run.
+
+### The effort dial
+
+- The planner grades every task first: **`simple` / `standard` / `deep`**
+  (`Plan.complexity`, graded before the team is designed - field order is the
+  prompt). `effort_for()` maps the grade onto every call that follows:
+  generation, merging, judging, and the generated agents' own runtime calls,
+  which inherit it through `LLM_EFFORT` in their environment. A translation
+  no longer deliberates; an analysis no longer rushes. A stronger
+  `LLM_EFFORT` the user set on purpose is never lowered.
+
+### The council
+
+- New `council.py`. For tasks graded deep, an **adversarial critic reads the
+  merged answer before the judge does** - hunting for unsupported claims,
+  reasoning that does not carry its conclusion, and the counter-case a
+  competent reviewer would demand. Real faults drive one refinement pass that
+  fixes what was named and preserves everything else; a sound answer stands,
+  unbilled. Two calls at most, no agent reruns, biased toward acquittal like
+  every self-check here. `COUNCIL=auto|always|off` (default `auto`).
+
+### The library curates itself
+
+- Every reused agent now carries a **reliability record**: wins and losses,
+  written by the orchestrator after every run it was handed back for. An
+  agent that has failed three or more times and lost more than it won is
+  **retired automatically** at the next lookup and rebuilt fresh - repair
+  fixes a run; this is the longer memory.
+- Repairing an already-kept agent is recorded as an **evolution**: the
+  generation counter advances and the record resets, because the code that
+  earned those losses no longer exists.
+
+### The interface keeps up
+
+- The live board's phase rail shows all **six** phases again
+  (`PLAN ▸ FORGE ▸ DEPS ▸ RUN ▸ MERGE ▸ CHECK` - the sixth had been missing,
+  so the rail silently degraded to bare numbers).
+- The board shows the task's **grade**, a **live spend meter** (calls and
+  estimated cost accruing while the run works), **wave lines**
+  (`wave 2/3 · research_agent + web_agent in parallel`), a `∥` marker on
+  agents genuinely running at once, and the council's cross-examination as a
+  visible activity. The final summary names the grade and whether the council
+  refined the answer. Plain mode prints the same facts as plain lines.
+- New **`/stats`** - the lifetime dashboard from disk: runs archived, agents
+  kept, free reuses, evolutions, and a reliability leaderboard. `/library`
+  now shows each agent's record (`3W/1L · gen 2`) beside its uses.
+
+### Proof
+
+- 526 tests (was 463), ruff clean, pyright 0 errors (was 6). New suites for
+  the graph, the council, the effort dial and the reliability record; the
+  parallel paths are pinned by tests that assert each agent saw exactly its
+  closure and nothing else.
+
+## It looks things up, and it checks its own work - 2026-08-26
+
+Two things AgentGod could not do: find out anything that happened after the
+model's training cutoff, and notice when its own answer did not answer the
+question. Both are now part of the loop.
+
+### Web search
+
+- The agent runtime declares Anthropic's **server-side `web_search` tool**.
+  The search runs on the API's servers, so a generated agent needs no scraper,
+  no second API key, no new dependency and no new hole in `codeguard` - it is
+  still standard library only, still ~0.05 s to start. `call_llm(..., search=True)`
+  is the whole surface.
+- A long search session pauses partway (`stop_reason: "pause_turn"`) and is
+  resumed by handing the paused turn straight back, capped by
+  `MAX_CONTINUATIONS`. `WEB_SEARCH_MAX_USES` is the per-call cost ceiling.
+- **The refusal path is gone.** `Intent.LIVE_DATA`, its regex battery and
+  `describe_live_data_limit` are deleted - roughly sixty lines whose only job
+  was to say "I have no internet access" before the pipeline ever started.
+  Those questions are now work, and the planner is told to give them to an
+  agent that looks them up rather than one that answers from memory.
+
+### Judgement
+
+- New `judgment.py`. Before planning, `clarifying_question` decides whether one
+  question is worth asking; after merging, `judge` reads the answer back
+  against the request and returns either "done" or an instruction the next
+  attempt can act on. A rejection with nothing actionable in it is treated as
+  done, because retrying on it just bills for the same answer twice.
+- A run no longer ends wherever the merger happened to stop. When the answer
+  misses the request the agents run again on `revision_task(task, missing)` -
+  the original wording with the gap appended, never the critique in place of
+  the request. Bounded by `TASK_REVISIONS` (default 1, `0` disables it), and a
+  revision that produces nothing usable leaves the first answer standing.
+- The clarifying question is asked in `main.py`, before the live display goes
+  up and only when stdin is a person: a question nobody can answer is a
+  stalled run, not a careful one.
+
+### The library learned about versions
+
+Found by running the thing rather than by reading it. A research task planned
+correctly, said "searching the web" in its own reasoning, reused
+`research_agent` from the library for free - and answered from memory, because
+that agent was written before `search` existed. It ran perfectly and silently
+did less than the plan promised.
+
+- `config.AGENT_RUNTIME_VERSION` is stamped onto every agent as it is
+  remembered, and `library.up_to_date()` is the second promise the library
+  makes, alongside `reusable()`. An agent from an older runtime is retired and
+  rewritten instead of handed back.
+- Every agent already on disk carries `runtime: 0` and is rebuilt on first use.
+
+### Proof
+
+- 23 new tests: the verdict rules and the revised task's shape, the clarifying
+  question's silence cases, the search tool's wire shape (declared only when
+  asked for, `max_uses` present, a paused turn resumed with no "continue"
+  message, a bounded continuation loop, search results never mistaken for the
+  answer), and the runtime-version retirement.
+- 463 total, still no API key or network needed.
+
+## Claude, directly - 2026-08-26
+
+OpenRouter is gone. Both halves of the system now talk to the Anthropic
+Messages API, and the default model is `claude-sonnet-5`.
+
+### The main agent
+
+- `config.py` drops LangChain and OpenRouter for the official `anthropic` SDK.
+  `get_llm()` is replaced by `get_client()` plus two call sites - `complete()`
+  for text and `complete_structured()` for a schema-constrained reply - so the
+  planner no longer routes structured output through a framework adapter.
+- `plan_agents()` uses `output_format=Plan`: the API enforces the schema, so a
+  malformed plan is a request error instead of something to salvage.
+- **`temperature` is gone.** Current models reject it. `LLM_EFFORT`
+  (`low` - `max`, default `medium`) is the knob that replaced it, and
+  `LLM_TIMEOUT_SECONDS` rises to 120s because the model reasons before it
+  answers.
+- Two dependencies removed (`langchain-openai`, `langchain-core`), one added.
+
+### Generated agents
+
+- The trusted runtime POSTs to `/v1/messages` with `x-api-key` and
+  `anthropic-version` - still standard library only, still no SDK import, still
+  ~0.05 s to start.
+- It returns the reply's **text** blocks. A reasoning model puts a thinking
+  block first, and returning that instead of the answer would be a silent
+  whole-run failure.
+- `call_llm(..., temperature=...)` is still accepted and now ignored, so the
+  four agents already in the library kept working across the switch. All four
+  were re-emitted on the new runtime.
+- Token usage on stderr is now `input_tokens` / `output_tokens`, and the
+  per-agent cost is priced locally from `config.PRICING_PER_MTOK`: the API
+  bills tokens and says nothing about money.
+
+### What an agent is allowed to import
+
+The curated import allowlist was refusing ordinary work. A task that needed a
+QR code was refused for `qrcode`; one that needed a CSV was refused for `csv`,
+which is in the standard library and was simply absent from a hand-written set
+of twenty-four names.
+
+- **The standard library is now allowed wholesale**, minus `BLOCKED_STDLIB` -
+  the dozen modules that would undo a check `codeguard` already makes
+  elsewhere in the same file (`subprocess`, `multiprocessing`, `ctypes`, `pty`,
+  `socket` for shelling out; `importlib`, `runpy`, `pickle`, `marshal` for
+  running code chosen at runtime; `shutil` for the filesystem). 199 modules
+  available, up from 24. Banning `subprocess` while banning `eval()` is one
+  rule, not two.
+- **The vetted package list grew from 9 names to 81**, covering web, data,
+  documents, images, dates, validation, crypto and databases.
+- `ALLOWED_PACKAGES` moved into `codeguard.py` and is now the **single source
+  of truth**: `executor.py` installs from it, and the import check derives from
+  it. A package that installs but may not be imported can no longer exist.
+- **The planner is shown the list.** The refusal was never really an allowlist
+  problem - the model named a package it could not see and had therefore
+  guessed. The planner prompt now carries all 81 names, and the generator
+  prompt tells each agent exactly which of them were installed *for it*.
+- The refusal message says why (`shells out`, `not a vetted package`) instead
+  of reciting the allowlist, which is now three hundred names and would be
+  three hundred names of noise in a repair prompt.
+
+An invented package name is still refused rather than installed. That guard is
+the point: a hallucinated name is a supply-chain vector, not a typo to be
+helpfully resolved.
+
+### Proof
+
+- 4 new tests exec the trusted runtime with the network stubbed and assert the
+  wire shape: auth headers, the required `max_tokens`, no `temperature` on the
+  request, thinking blocks skipped, usage line on stderr.
+- 13 more cover the allowlist change: ordinary stdlib admitted, blocked stdlib
+  still refused, every vetted package importable under its import name, the
+  planner prompt carrying every name, and an agent never being offered a
+  package that was not installed for it.
+- 440 total, still no API key or network needed.
+
 ## The interface - 2026-08-25
 
 The pipeline is unchanged; how it *feels* is not. The terminal experience is

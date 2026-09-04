@@ -51,6 +51,9 @@ _REVISIONS = frozenset(
         "rephrase", "reword", "change", "adjust", "tweak", "fix", "improve",
         "polish", "formal", "casual", "friendlier", "softer", "harder", "punchier",
         "bullet", "bullets", "table", "list", "translate", "continue", "keep",
+        # Corrections. "that's wrong" without the previous answer is nothing;
+        # treating it as a fresh task built agents to research the word "wrong".
+        "wrong", "incorrect", "missed", "forgot", "mistake",
     }
 )
 
@@ -62,6 +65,16 @@ _PHRASES = (
     re.compile(r"\bhow about\b"),
     re.compile(r"\b(?:can|could) you (?:also|instead)\b"),
     re.compile(r"\bin (?:french|spanish|german|hindi|japanese|italian)\b"),
+    # Corrections: only meaningful against the answer that just arrived.
+    re.compile(r"\bthat'?s? (?:is )?(?:wrong|incorrect|not right|not what i asked)\b"),
+    re.compile(r"\bnot what i (?:asked|meant|wanted)\b"),
+    re.compile(r"\byou (?:missed|forgot|left out|got .{1,40} wrong)\b"),
+    # Elaborations: a request for more of what came before.
+    re.compile(r"\btell me more\b"),
+    re.compile(r"\bgo (?:on|deeper)\b"),
+    re.compile(r"\bkeep going\b"),
+    re.compile(r"\b(?:more|extra) detail(?:s)?\b"),
+    re.compile(r"\belaborate\b"),
 )
 
 _WORD = re.compile(r"[a-z']+")

@@ -15,29 +15,20 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# The vetted pip packages, defined once in codeguard next to the import check
+# that lets them through. Installing a package the generated code may not
+# import is a wasted install; refusing an import for a package that installed
+# fine is a wasted run. One list makes both impossible.
+from codeguard import ALLOWED_PACKAGES
 from config import (
     AGENT_TIMEOUT_SECONDS,
     AGENT_VENV_DIR,
     GENERATED_DIR,
     PROJECT_DIR,
     USAGE_MARKER,
+    estimate_cost,
 )
 from planner import AgentSpec
-
-# Vetted pip packages a generated agent may use, mapped to their import names.
-# A model-invented package name is refused rather than installed: hallucinated
-# names are a supply-chain vector, not a typo to be helpfully resolved.
-ALLOWED_PACKAGES: dict[str, str] = {
-    "beautifulsoup4": "bs4",
-    "lxml": "lxml",
-    "markdown": "markdown",
-    "numpy": "numpy",
-    "pandas": "pandas",
-    "python-dateutil": "dateutil",
-    "pyyaml": "yaml",
-    "requests": "requests",
-    "tabulate": "tabulate",
-}
 
 # Splits "requests>=2.31.0" / "pandas[extra]" down to "requests" / "pandas".
 _REQUIREMENT_NAME = re.compile(r"^[A-Za-z0-9._-]+")
@@ -216,15 +207,23 @@ def install_dependencies(specs: list[AgentSpec]) -> DependencyReport:
     return report
 
 
-def _child_env() -> dict[str, str]:
+def _child_env(effort: str | None = None, model: str | None = None) -> dict[str, str]:
     """Environment for an agent subprocess.
 
     UTF-8 is forced both ways: without it a piped child on Windows writes
     cp1252, the parent decodes UTF-8, and the agent's output is lost.
+
+    `effort` is how the run's complexity grade reaches the generated agents:
+    their trusted runtime reads LLM_EFFORT from the environment, so a simple
+    task's agents answer fast and cheap while a deep task's agents think.
     """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    if effort:
+        env["LLM_EFFORT"] = effort
+    if model:
+        env["MODEL"] = model
     return env
 
 
@@ -234,8 +233,12 @@ def _sanitise(text: str) -> str:
     return text.replace(project, "<project>").replace(project.replace("\\", "/"), "<project>")
 
 
-def _extract_usage(stderr: str) -> tuple[dict[str, float], str]:
-    """Pull the agent's token report off stderr, returning the remaining text."""
+def _extract_usage(stderr: str, model: str | None = None) -> tuple[dict[str, float], str]:
+    """Pull the agent's token report off stderr, returning the remaining text.
+
+    The API bills tokens and says nothing about money, so the cost is priced
+    here from the same table the main agent's own calls are priced from.
+    """
     totals = {"input_tokens": 0.0, "output_tokens": 0.0, "cost_usd": 0.0}
     remaining: list[str] = []
     for line in stderr.splitlines():
@@ -246,10 +249,43 @@ def _extract_usage(stderr: str) -> tuple[dict[str, float], str]:
             usage = json.loads(line[len(USAGE_MARKER) :].strip())
         except ValueError:
             continue
-        totals["input_tokens"] += float(usage.get("prompt_tokens") or 0)
-        totals["output_tokens"] += float(usage.get("completion_tokens") or 0)
-        totals["cost_usd"] += float(usage.get("cost") or 0)
+        totals["input_tokens"] += float(usage.get("input_tokens") or 0)
+        totals["output_tokens"] += float(usage.get("output_tokens") or 0)
+    totals["cost_usd"] = (
+        estimate_cost(totals["input_tokens"], totals["output_tokens"], model=model) or 0.0
+    )
     return totals, "\n".join(remaining).strip()
+
+
+# The failure texts the trusted agent runtime itself produces when the world,
+# not the code, is broken. They are fixed strings from generator.AGENT_HEADER
+# and this module, so matching on them is matching on our own wording.
+_ENVIRONMENTAL = (
+    "timed out after",  # this module's own timeout message
+    "could not start agent",  # interpreter/OS problem
+    "ANTHROPIC_API_KEY is not set",  # the header's missing-key exit
+    "the API returned HTTP",  # the header's non-retryable HTTP exit
+    "API request failed",  # the header's retries-exhausted exit
+)
+
+# The subset above that a plain retry can plausibly fix: the service was
+# briefly unhappy. A timeout or a missing key will fail identically again.
+_TRANSIENT = ("the API returned HTTP", "API request failed")
+
+
+def is_environmental(error: str) -> bool:
+    """Whether an agent's failure text blames the environment, not the code.
+
+    Regenerating an agent because the API returned 429 rewrites working code
+    to fix a problem that is not in the code - and bills two generation
+    calls to do it.
+    """
+    return any(marker in error for marker in _ENVIRONMENTAL)
+
+
+def is_transient(error: str) -> bool:
+    """Whether the environmental failure is worth one plain re-run."""
+    return any(marker in error for marker in _TRANSIENT)
 
 
 def execute_agent(
@@ -257,6 +293,8 @@ def execute_agent(
     task: str,
     previous_outputs: dict[str, str],
     python_exe: str | None = None,
+    effort: str | None = None,
+    model: str | None = None,
 ) -> AgentResult:
     """Run one agent file as a subprocess.
 
@@ -289,14 +327,14 @@ def execute_agent(
             encoding="utf-8",
             errors="replace",
             timeout=AGENT_TIMEOUT_SECONDS,
-            env=_child_env(),
+            env=_child_env(effort, model),
         )
     except subprocess.TimeoutExpired:
         return failure(f"timed out after {AGENT_TIMEOUT_SECONDS}s")
     except OSError as error:
         return failure(f"could not start agent: {error}")
 
-    usage, stderr = _extract_usage(completed.stderr or "")
+    usage, stderr = _extract_usage(completed.stderr or "", model)
     stdout = (completed.stdout or "").strip()
 
     if completed.returncode != 0:

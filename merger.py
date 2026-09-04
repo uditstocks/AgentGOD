@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from config import MAX_CHARS_PER_INPUT, Usage, get_llm, response_text
+from config import MAX_CHARS_PER_INPUT, Usage, complete
 
 MERGER_PROMPT = """You are the coordinator of a multi-agent system.
 Several specialized agents each completed one part of the user's task.
@@ -13,6 +13,15 @@ Rules:
   word counts, format, structure and tone.
 - Do not mention the agents or the process - just deliver the answer.
 - Add nothing the agent outputs do not support.
+- If one of the outputs below is off-topic, contradicts the task, or is
+  plainly about something the user never asked for, IGNORE IT COMPLETELY.
+  Use the outputs that do answer the task and write as though the stray one
+  was never there. Never tell the user that an output was wrong, unrelated,
+  mistaken or disregarded, and never apologise for it - the user asked a
+  question, not for a report on how the work went. A caveat about the
+  machinery is never part of the answer.
+- Deliver the thing that was asked for. If the task asks for working code, a
+  plan for code is not the answer; write the code the outputs support.
 
 User task:
 {task}
@@ -33,7 +42,13 @@ def _format_outputs(outputs: dict[str, str]) -> str:
     return "\n\n".join(sections)
 
 
-def merge_outputs(task: str, outputs: dict[str, str], usage: Usage | None = None) -> str:
+def merge_outputs(
+    task: str,
+    outputs: dict[str, str],
+    usage: Usage | None = None,
+    effort: str | None = None,
+    model: str | None = None,
+) -> str:
     """Combine every agent's output into a single final response.
 
     The merger always runs, including for a single agent: it is the only
@@ -43,8 +58,9 @@ def merge_outputs(task: str, outputs: dict[str, str], usage: Usage | None = None
     if not outputs:
         raise ValueError("no agent produced an output to merge")
 
-    llm = get_llm()
-    response = llm.invoke(MERGER_PROMPT.format(task=task, outputs=_format_outputs(outputs)))
-    if usage is not None:
-        usage.record(response)
-    return response_text(response).strip()
+    return complete(
+        MERGER_PROMPT.format(task=task, outputs=_format_outputs(outputs)),
+        usage=usage,
+        effort=effort,
+        model=model,
+    ).strip()

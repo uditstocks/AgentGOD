@@ -127,3 +127,48 @@ def test_save_run_returns_none_instead_of_raising(runs_dir, monkeypatch):
 
     monkeypatch.setattr(runlog.Path, "write_text", explode)
     assert save_run("t", _Result()) is None  # the answer is already printed
+
+
+# --- the archive records why the run cost what it did --------------------------
+
+
+def test_the_record_carries_the_runs_story():
+    from types import SimpleNamespace
+
+    from runlog import render
+
+    result = SimpleNamespace(
+        response="the answer",
+        duration_seconds=12.0,
+        cost_summary=lambda: "6 LLM calls",
+        plan=None,
+        failures={},
+        complexity="deep",
+        reused=["research_agent"],
+        built=["writer_agent"],
+        council_improved=True,
+        revisions=1,
+        caveat="",
+    )
+    text = render("write a brief", result)
+    assert "graded deep" in text
+    assert "reused free: research_agent" in text
+    assert "built: writer_agent" in text
+    assert "the council refined the answer" in text
+    assert "1 revision" in text
+
+
+def test_a_caveat_is_recorded_where_a_reader_will_see_it():
+    from types import SimpleNamespace
+
+    from runlog import render
+
+    result = SimpleNamespace(
+        response="the answer",
+        duration_seconds=1.0,
+        cost_summary=lambda: "2 LLM calls",
+        plan=None,
+        failures={},
+        caveat="delivered unchecked - the answer's quality checks failed: boom",
+    )
+    assert "**Caveat** delivered unchecked" in render("do a thing", result)

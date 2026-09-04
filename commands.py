@@ -17,10 +17,12 @@ PREFIX = "/"
 # name -> (argument, one-line description), in the order /help lists them.
 COMMANDS: dict[str, tuple[str, str]] = {
     "help": ("", "this list"),
-    "library": ("", "the agents kept for reuse, and how often each is used"),
+    "library": ("", "the agents kept for reuse, with each one's record"),
+    "stats": ("", "the lifetime dashboard: runs, reuse savings, reliability"),
     "forget": ("<agent>", "drop one agent from the library"),
     "audit": ("", "check the library for agents that hardcoded their first task"),
-    "history": ("", "the most recent archived runs"),
+    "history": ("[n]", "the recent archived runs, or reopen run n"),
+    "last": ("", "show the most recent answer again"),
     "clear": ("", "forget the conversation so far"),
     "paste": ("", "start a multi-line task; end it with a line containing only ."),
     "quit": ("", "leave"),
@@ -92,8 +94,61 @@ def _library_text() -> str:
     lines = [f"**{len(entries)} agent{'s' if len(entries) != 1 else ''} kept for reuse**", ""]
     for entry in entries:
         uses = f"{entry.uses} use{'s' if entry.uses != 1 else ''}"
-        lines.append(f"    {entry.name:<22} {uses:<10} {entry.role or 'no description recorded'}")
+        record = _record(entry)
+        lines.append(
+            f"    {entry.name:<22} {uses:<9} {record:<14} "
+            f"{entry.role or 'no description recorded'}"
+        )
     lines += ["", f"Drop one with `{PREFIX}forget <name>`."]
+    return "\n".join(lines)
+
+
+def _record(entry) -> str:
+    """One agent's reliability, compact: `3W/1L · gen 2`. Blank while unproven."""
+    parts = []
+    if entry.wins or entry.losses:
+        parts.append(f"{entry.wins}W/{entry.losses}L")
+    if entry.generation > 1:
+        parts.append(f"gen {entry.generation}")
+    return " · ".join(parts)
+
+
+def _stats_text() -> str:
+    """The lifetime dashboard, entirely from disk - nothing here costs a call."""
+    from config import RUNS_DIR
+    from library import catalogue
+
+    entries = catalogue()
+    try:
+        run_count = sum(1 for _ in RUNS_DIR.glob("*.md")) if RUNS_DIR.is_dir() else 0
+    except OSError:
+        run_count = 0
+
+    reuses = sum(entry.uses for entry in entries)
+    evolved = [entry for entry in entries if entry.generation > 1]
+    proven = [entry for entry in entries if entry.wins or entry.losses]
+
+    lines = [
+        "**AgentGod - lifetime stats**",
+        "",
+        f"    runs archived      {run_count}",
+        f"    agents in library  {len(entries)}",
+        f"    free reuses        {reuses}  (each one skipped a full code-generation call)",
+        f"    evolved agents     {len(evolved)}"
+        + (f"  ({', '.join(e.name for e in evolved)})" if evolved else ""),
+    ]
+    if proven:
+        lines += ["", "**Reliability** - wins/losses since each agent was kept or last evolved", ""]
+        ranked = sorted(proven, key=lambda e: (-(e.wins - e.losses), -e.uses, e.name))
+        for entry in ranked:
+            record = _record(entry) or "-"
+            lines.append(f"    {entry.name:<22} {record}")
+    if not entries and not run_count:
+        return (
+            "Nothing to count yet. Run a task, keep an agent, and this "
+            "dashboard starts filling in."
+        )
+    lines += ["", f"`{PREFIX}library` lists every kept agent; `{PREFIX}history` the recent runs."]
     return "\n".join(lines)
 
 
@@ -140,28 +195,70 @@ def _audit_text() -> str:
     return "\n".join(lines)
 
 
-def _history_text(limit: int = 10) -> str:
+def _archived_runs() -> list:
+    """Every archived run, most recent first."""
     from config import RUNS_DIR
 
     try:
-        files = sorted(RUNS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return sorted(RUNS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
-        files = []
+        return []
+
+
+def _title_of(path) -> str:
+    """The run's own heading, or its filename if the file cannot be read."""
+    try:
+        first = path.read_text(encoding="utf-8").lstrip().splitlines()[0]
+        return first.lstrip("# ").strip() or path.stem
+    except (OSError, IndexError):
+        return path.stem
+
+
+def _read_run(path) -> str:
+    """One archived run, verbatim - it is already Markdown."""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError as error:
+        return f"Could not read `{path.name}` ({error})."
+
+
+def _history_text(argument: str = "", limit: int = 10) -> str:
+    """The recent runs, numbered - or one of them, reopened.
+
+    Numbering is the whole point: an archive nobody can address is a folder,
+    not a history. `/history 3` prints run 3 exactly as it was saved.
+    """
+    files = _archived_runs()
     if not files:
         return "No runs archived yet. Every completed task is saved to `runs/`."
 
-    lines = [f"**{len(files)} run{'s' if len(files) != 1 else ''} archived** - most recent first", ""]
-    for path in files[:limit]:
-        title = path.stem
-        try:
-            first = path.read_text(encoding="utf-8").lstrip().splitlines()[0]
-            title = first.lstrip("# ").strip() or title
-        except (OSError, IndexError):
-            pass
-        lines.append(f"    {title[:70]}")
+    wanted = argument.strip()
+    if wanted:
+        if not wanted.isdigit() or not 1 <= int(wanted) <= len(files):
+            return (
+                f"There is no run {wanted}. `{PREFIX}history` lists them "
+                f"(1 to {len(files)})."
+            )
+        return _read_run(files[int(wanted) - 1])
+
+    lines = [
+        f"**{len(files)} run{'s' if len(files) != 1 else ''} archived** - most recent first",
+        "",
+    ]
+    for index, path in enumerate(files[:limit], start=1):
+        lines.append(f"    {index:>2}. {_title_of(path)[:66]}")
     if len(files) > limit:
         lines.append(f"    ... and {len(files) - limit} more in runs/")
+    lines += ["", f"Reopen one with `{PREFIX}history <number>`, or `{PREFIX}last`."]
     return "\n".join(lines)
+
+
+def _last_text() -> str:
+    """The most recent answer, shown again without paying for it twice."""
+    files = _archived_runs()
+    if not files:
+        return "Nothing archived yet - finish a task and it will be saved to `runs/`."
+    return _read_run(files[0])
 
 
 def handle(command: Command, conversation=None) -> str:
@@ -170,12 +267,16 @@ def handle(command: Command, conversation=None) -> str:
         return help_text()
     if command.name in ("library", "agents", "ls"):
         return _library_text()
+    if command.name in ("stats", "dashboard"):
+        return _stats_text()
     if command.name == "forget":
         return _forget_text(command.argument)
     if command.name == "audit":
         return _audit_text()
     if command.name in ("history", "runs"):
-        return _history_text()
+        return _history_text(command.argument)
+    if command.name in ("last", "again"):
+        return _last_text()
     if command.name == "clear":
         if conversation is None:
             return "Nothing to forget."

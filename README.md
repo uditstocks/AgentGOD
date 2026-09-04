@@ -7,10 +7,10 @@ https://agent-god-landing.vercel.app/
 ### One agent that writes other agents - runs them, merges their answers, and deletes them.
 
 ![python](https://img.shields.io/badge/python-3.10%2B-334155?style=flat-square&labelColor=0d1117)
-![tests](https://img.shields.io/badge/tests-183%20passed-15803d?style=flat-square&labelColor=0d1117)
+![tests](https://img.shields.io/badge/tests-599%20passed-15803d?style=flat-square&labelColor=0d1117)
 ![ruff](https://img.shields.io/badge/ruff-clean-15803d?style=flat-square&labelColor=0d1117)
 ![pyright](https://img.shields.io/badge/pyright-0%20errors-15803d?style=flat-square&labelColor=0d1117)
-![model](https://img.shields.io/badge/any%20model-OpenRouter-334155?style=flat-square&labelColor=0d1117)
+![model](https://img.shields.io/badge/model-claude--sonnet--5-334155?style=flat-square&labelColor=0d1117)
 
 **[Quickstart](#quickstart)** · **[How it works](#how-it-works)** · **[See it run](#see-it-run)** · **[Safety](#containment)** · **[Config](#calibration)** · **[Architecture](ARCHITECTURE.md)**
 
@@ -41,26 +41,51 @@ No agent exists before you ask for it. Most no longer exist a minute later.
 ```bash
 git clone https://github.com/uditstocks/AgentGOD.git
 cd AgentGOD
-pip install -r requirements.txt
+pip install -e .[rich]      # installs the `agentgod` command
 ```
 
-Get a key from **[openrouter.ai/keys](https://openrouter.ai/keys)**, then:
+Then run it - it will ask for your key the first time (input hidden,
+verified against the API, saved to a gitignored `.env`):
 
 ```bash
-cp .env.example .env        # Windows:  Copy-Item .env.example .env
+agentgod
 ```
 
-```ini
-# .env
-OPENROUTER_API_KEY=sk-or-...
+That is the whole setup. Prefer doing it by hand? `pip install -r
+requirements.txt`, copy `.env.example` to `.env`, paste a key from
+**[console.anthropic.com](https://console.anthropic.com/settings/keys)**, and
+`python main.py` - both spellings are the same program. A real environment
+variable outranks the file, so CI can inject the key without one.
+
+---
+
+## The command line
+
+```
+agentgod                                  interactive session
+agentgod "write a haiku about rain"       one task, then exit
+agentgod --json "compare X and Y"         machine-readable result on stdout
+echo summarise this repo | agentgod -     task text from stdin
+agentgod library | stats | history        the free, offline commands (no key)
+agentgod --discard "one-off experiment"   run without growing the library
+
+exit codes    0 succeeded · 1 failed · 2 bad usage · 130 interrupted
 ```
 
-```bash
-python main.py
-```
+The streams honour the Unix contract: **the answer is stdout, everything
+else is not.** Pipe or redirect a run and the progress narration moves to
+stderr, so `agentgod "..." > answer.md` captures exactly the answer.
+`--quiet` prints only the answer even at a terminal; `--json` emits one
+object with the answer, the team, the cost, and how the run went.
 
-That is the whole setup. One key, one command. A real environment variable
-outranks the file, so CI can inject the key without one.
+Per-invocation control, no config edits: `--model`, `--effort low..max`,
+`--council auto|always|off`, and `--keep` / `--discard` / `--no-input` for
+scripts that must never prompt. Everything after `--task` is task text,
+never a flag, so a task may safely contain the word `--json`.
+
+When something breaks, the error says what happened and what to do - "Your
+API key was rejected. Check ANTHROPIC_API_KEY in .env..." - with the raw
+detail dimmed underneath, never a bare JSON dump.
 
 ---
 
@@ -75,7 +100,7 @@ and a compact transcript.
 ```
   ────────────────────────────────────────────────────── 22:14 ──
 
-  PLAN  ▸  FORGE  ▸  DEPS  ▸  RUN  ▸  MERGE                00:08
+  PLAN  ▸  FORGE  ▸  DEPS  ▸  RUN  ▸  MERGE  ▸  CHECK      00:08
   ⠸ run  translation_agent is working  (1/2)
 
    ⠼  translation_agent  Translate the phrase into the      3s
@@ -92,7 +117,7 @@ and a compact transcript.
   run    10.4s · 5 LLM calls · 1,395 in / 226 out · ~$0.0003
   saved  runs/20260825_221204_translate-the-phrase.md
 
-  ❯ Keep the 1 new agent (translation_agent) for reuse? [keep/discard]:
+  ❯ Keep the 1 new agent (translation_agent) for reuse? [Keep/discard/always] (Enter = keep):
 ```
 
 Pipe it, redirect it, run it in CI, or run it without `rich` installed, and
@@ -100,7 +125,7 @@ the same run degrades to clean, aligned plain text - same information, no
 color, no animation, nothing that fights a log file:
 
 ```
-$ python main.py --plain --task "In one line, name one benefit of static typing."
+$ agentgod --plain "In one line, name one benefit of static typing."
 
 [1/5] Planning agents...
   - research_agent: gather facts about the benefits of static typing
@@ -177,12 +202,12 @@ from nothing. It never does the work itself.
          │
          ▼
    ┌───────────┐
-   │  PLANNER  │   decides how many agents this needs, and what each is for
+   │  PLANNER  │   grades the task, decides the team, and wires who feeds whom
    └─────┬─────┘
-         │  1–4 specifications
+         │  1–4 specifications, as a dependency graph
          ▼
    ┌───────────┐
-   │ GENERATOR │   writes the one function each agent will execute
+   │ GENERATOR │   writes every new agent - all of them at once, in parallel
    └─────┬─────┘
          │  source, per agent
          ▼
@@ -192,13 +217,24 @@ from nothing. It never does the work itself.
          │  cleared
          ▼
    ┌───────────┐
-   │  EXECUTOR │   runs it in isolation, against a clock
-   └─────┬─────┘
+   │  EXECUTOR │   runs the graph in waves - independent agents side by side,
+   └─────┬─────┘   dependent ones in strict sequence, each against a clock
          │  output - or a reason it failed
          ▼
    ┌───────────┐
    │   MERGER  │   collapses every voice into one answer
    └─────┬─────┘
+         │  a finished answer
+         ▼
+   ┌───────────┐
+   │  COUNCIL  │   deep tasks only: an adversarial critic cross-examines the
+   └─────┬─────┘   answer, and real faults drive one refinement pass
+         │  it survives the reading
+         ▼
+   ┌───────────┐
+   │ JUDGEMENT │   reads it back against the request  ──┐  short?
+   └─────┬─────┘                                        │  run again
+         │  it holds                        ────────────┘
          ▼
     final response
          │
@@ -209,6 +245,61 @@ from nothing. It never does the work itself.
 Each stage does one thing and knows nothing about the others. The planner has
 never seen a line of Python. The executor has never seen a prompt. A factory
 line, not one mind holding the whole problem at once.
+
+The last stage is the one that makes it an agent rather than a pipeline. A run
+used to end wherever the merger happened to stop; now the answer is read back
+against the request, and a 200-word brief that came out at 600 words sends the
+agents round again with the gap named. Before any of it starts, an ambiguous
+task earns one clarifying question - and only one, and only when there is a
+person there to answer it.
+
+Agents can also **search the web**. That runs server-side at the API, so a
+generated agent stays standard-library-only and gains no new reach of its own:
+it asks a question and reads an answer. What it cannot do is browse - no
+logging in, no clicking through a site, no filling in a form.
+
+---
+
+## Where the thinking goes
+
+Most systems spend the same effort on "translate good morning" as on "analyse
+this acquisition". This one budgets like a person would.
+
+**The planner grades every task first** - `simple`, `standard` or `deep` -
+and the grade sets the reasoning effort of *every* call that follows: the
+code generation, the merge, the judging, and the generated agents' own calls
+at runtime. A translation stops deliberating; an analysis stops rushing. A
+stronger `LLM_EFFORT` you set yourself is never lowered.
+
+**The plan is a graph, not a queue.** The planner declares which agents feed
+which, and only a proven-independent pair ever runs in parallel:
+
+```
+  wave 1     research_agent  ∥  market_data_agent      side by side
+                    └───────┬───────┘
+  wave 2             analysis_agent                    waits for both
+                            │
+  wave 3              writer_agent                     waits for the analysis
+```
+
+Everything in a wave has every input it needs before the wave starts, so
+running them together is exactly as correct as running them one by one - and
+a plan that is genuinely a chain still runs as a chain. Declared dependencies
+are sanitised like everything else the model writes: unknown names are
+dropped, a cycle is broken rather than obeyed, and a plan that declares
+nothing falls back to the old safe sequence.
+
+**Deep answers face the council.** Before the judge checks compliance, an
+adversarial critic reads the merged answer the way its toughest reviewer
+would - unsupported claims, reasoning that does not carry its conclusion, the
+counter-case that was never weighed. Real faults drive one refinement pass
+that fixes exactly what was named; a sound answer stands, unbilled. Two calls
+at most, and only for tasks graded deep.
+
+**The library keeps score on itself.** Every reused agent's run is recorded
+as a win or a loss. One that has failed more tasks than it finished is
+retired automatically and rebuilt fresh; a repaired agent advances a
+generation and starts with a clean record. `/stats` shows the ledger.
 
 ---
 
@@ -222,10 +313,16 @@ wrote?**
   before it goes near the filesystem. `../../../pwned` becomes `pwned`.
 - **Code is not trusted.** Every generated file is parsed and inspected -
   import by import, call by call - before it is allowed to become a process.
-  No `eval`. No `exec`. No shelling out. No writing to disk. Anything outside a
-  vetted set of imports is refused, not warned about.
-- **Dependencies are not trusted.** A package is installed only if it is on an
-  explicit allowlist, and only into an isolated environment - never yours.
+  The whole standard library is available, minus the dozen modules that would
+  undo the rest of this list: `subprocess`, `shutil`, `socket`, `pickle`,
+  `importlib` and their neighbours. No `eval`. No `exec`. No shelling out.
+  No writing to disk.
+- **Dependencies are not trusted.** A package is installed only if it is one of
+  the ~80 vetted names, and only into an isolated environment - never yours.
+  An invented package name is refused rather than installed: a hallucinated
+  name is a supply-chain vector, not a typo to be helpfully resolved. The list
+  lives in `codeguard.ALLOWED_PACKAGES`; add to it and both the installer and
+  the import check follow.
 - **Time is not unlimited.** Every agent runs against a hard deadline. If it
   fails, its own error becomes the instruction for rewriting it.
 
@@ -302,11 +399,11 @@ sequenceDiagram
 No shared memory. No message bus. Nothing travels between agents except what
 the one before it actually returned.
 
-### Standard library only
+### No framework, no install step
 
-Generated agents import nothing. They speak to the model directly over plain
-HTTPS, which is why they start instantly instead of paying a framework import
-on every single run:
+Generated agents import no framework and no SDK. They speak to the Messages
+API directly over plain HTTPS, which is why they start instantly instead of
+paying a framework import on every single run:
 
 ```diff
   COLD START · measured · Python 3.12 · Windows 11
@@ -368,7 +465,7 @@ ranked by how often they have actually been used.
   $ pip install pytest ruff pyright
 
   $ pytest
-+ 183 passed
++ 599 passed
 
   $ ruff check .
 + All checks passed!
@@ -389,16 +486,26 @@ Everything below has a working default. Only the key is required.
 
 | Variable | Default | Governs |
 |---|---|---|
-| `OPENROUTER_API_KEY` | - *(required)* | Access to the model |
-| `MODEL` | `openai/gpt-4o-mini` | Any chat model OpenRouter can reach |
+| `ANTHROPIC_API_KEY` | - *(required)* | Access to the model |
+| `MODEL` | `claude-sonnet-5` | The workhorse: planning, code, agents, merging |
+| `FAST_MODEL` | `claude-haiku-4-5` | The mechanical checks - clarify and judge |
+| `DEEP_MODEL` | = `MODEL` | Used only for tasks graded `deep` |
 | `MAX_AGENTS` | `4` | Ceiling on team size |
+| `MAX_PARALLEL_AGENTS` | `4` | How many independent agents may run at once. `1` disables parallelism |
+| `COUNCIL` | `auto` | The adversarial review: `auto` (deep tasks only), `always`, `off` |
 | `AGENT_TIMEOUT_SECONDS` | `300` | Hard deadline per running agent |
 | `AGENT_REPAIR_ATTEMPTS` | `2` | Rewrites allowed for a crashing agent |
 | `CODEGEN_ATTEMPTS` | `3` | Rewrites allowed for invalid generated code |
-| `LLM_TIMEOUT_SECONDS` | `60` | Deadline for the architect's own calls |
+| `LLM_TIMEOUT_SECONDS` | `120` | Deadline for the architect's own calls |
+| `LLM_MAX_TOKENS` | `8192` | Ceiling on one reply from the architect |
+| `LLM_EFFORT` | `medium` | How hard the model works: `low` - `max`. Replaces temperature |
 | `LLM_MAX_RETRIES` | `3` | Retries on a transient failure |
 | `MAX_CHARS_PER_INPUT` | `6000` | Cap on text forwarded to the next agent |
+| `TASK_REVISIONS` | `1` | Rebuilds allowed when the answer misses the request. `0` turns self-checking off |
+| `WEB_SEARCH_MAX_USES` | `3` | Searches one agent call may run (each carries a fee) |
 | `AGENTGOD_PLAIN` | - | Force plain output (same as `--plain`) |
+| `AGENTGOD_KEEP` | - | Standing keep answer: `always` or `never` |
+| `CLARIFY` | `auto` | The one pre-run question: `auto` or `off` |
 | `NO_COLOR` | - | Keep the interface, strip the color |
 
 The interface needs `rich`, but only wants it: if it is missing, every run
@@ -410,16 +517,20 @@ plain text automatically.
 ## The structure
 
 ```diff
+  cli.py              the command line: flags, verbs, exit codes
   main.py             the only file that speaks to a human
+  problems.py         a failure → what happened, and what to do about it
   ui.py               the presentation surface - and its plain-text fallback
   richui.py           the live interface: phase rail, agent board, panels
   events.py           the seam: the pipeline emits, the interface draws
-  orchestrator.py     the architect - sequences everything, owns retries
-  planner.py          task → team specification (and the security boundary)
+  orchestrator.py     the architect - sequences everything, owns retries and waves
+  planner.py          task → a graded team specification, wired as a graph
+  taskgraph.py        the plan's shape - waves, closures, cycle-proofing
   generator.py        specification → source code
   codeguard.py        reads that source before it is trusted
   executor.py         files, subprocesses, timeouts - no model calls
   merger.py           every output → one voice
+  council.py          the adversarial reading a deep answer must survive
   library.py          remembers every agent, hands it back free
   runlog.py           archives the answer to runs/
   inventory.py        clears the scratch copies

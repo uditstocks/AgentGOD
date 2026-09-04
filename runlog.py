@@ -51,6 +51,29 @@ def render(task: str, result, when: datetime | None = None) -> str:
         f"- **Model** {MODEL}",
         f"- **Took** {result.duration_seconds:.1f}s",
         f"- **Cost** {result.cost_summary()}",
+    ]
+
+    # Why this run cost what it did. Without these lines an expensive run and
+    # a cheap one look identical in the archive a month later.
+    story = []
+    complexity = getattr(result, "complexity", "standard")
+    if complexity != "standard":
+        story.append(f"graded {complexity}")
+    if getattr(result, "reused", None):
+        story.append(f"reused free: {', '.join(result.reused)}")
+    if getattr(result, "built", None):
+        story.append(f"built: {', '.join(result.built)}")
+    if getattr(result, "council_improved", False):
+        story.append("the council refined the answer")
+    revisions = getattr(result, "revisions", 0)
+    if revisions:
+        story.append(f"{revisions} revision{'s' if revisions != 1 else ''}")
+    if story:
+        lines.append(f"- **Run** {' · '.join(story)}")
+    if getattr(result, "caveat", ""):
+        lines.append(f"- **Caveat** {result.caveat}")
+
+    lines += [
         "",
         "## Task",
         "",

@@ -7,6 +7,7 @@ import sys
 import pytest
 
 import executor
+from config import estimate_cost
 from executor import (
     AgentResult,
     execute_agent,
@@ -126,14 +127,15 @@ def test_usage_is_parsed_off_stderr(tmp_path):
         "import json, sys\n"
         "json.loads(sys.stdin.read())\n"
         "print('__AGENT_USAGE__ ' + json.dumps("
-        "{'prompt_tokens': 11, 'completion_tokens': 5, 'cost': 0.25}), file=sys.stderr)\n"
+        "{'input_tokens': 11, 'output_tokens': 5}), file=sys.stderr)\n"
         "print('the answer')\n",
     )
     result = run(agent)
     assert result.ok
     assert result.output == "the answer"  # marker line stayed out of stdout
     assert (result.input_tokens, result.output_tokens) == (11, 5)
-    assert result.cost_usd == pytest.approx(0.25)
+    # The API bills tokens, not money, so the cost is priced locally.
+    assert result.cost_usd == pytest.approx(estimate_cost(11, 5))
 
 
 def test_usage_marker_is_stripped_from_error_text(tmp_path):
@@ -142,7 +144,7 @@ def test_usage_marker_is_stripped_from_error_text(tmp_path):
         "usage_fail_agent",
         "import json, sys\n"
         "json.loads(sys.stdin.read())\n"
-        "print('__AGENT_USAGE__ {\"prompt_tokens\": 3}', file=sys.stderr)\n"
+        "print('__AGENT_USAGE__ {\"input_tokens\": 3}', file=sys.stderr)\n"
         "sys.exit(2)\n",
     )
     result = run(agent)
@@ -232,3 +234,48 @@ def test_no_dependencies_touches_nothing(monkeypatch):
     spec = AgentSpec(name="plain_agent", role="r", instructions="i")
     report = install_dependencies([spec])
     assert (report.installed, report.refused, report.failed) == ([], [], [])
+
+
+# --- the effort dial reaches the generated agents ------------------------------
+
+
+def test_the_runs_effort_grade_reaches_the_agent_environment(tmp_path):
+    agent = write_agent(
+        tmp_path,
+        "effort_agent",
+        "import os\nprint(os.environ.get('LLM_EFFORT', 'unset'))\n",
+    )
+    result = execute_agent(agent, "t", {}, python_exe=PYTHON, effort="high")
+    assert result.ok
+    assert result.output == "high"
+
+
+def test_no_grade_leaves_the_environment_alone(tmp_path, monkeypatch):
+    monkeypatch.delenv("LLM_EFFORT", raising=False)
+    agent = write_agent(
+        tmp_path,
+        "effort_agent",
+        "import os\nprint(os.environ.get('LLM_EFFORT', 'unset'))\n",
+    )
+    result = execute_agent(agent, "t", {}, python_exe=PYTHON)
+    assert result.ok
+    assert result.output == "unset"
+
+
+# --- environmental failures: the world broke, not the code ---------------------
+
+
+def test_environmental_failures_are_recognised():
+    from executor import is_environmental, is_transient
+
+    assert is_environmental("timed out after 300s")
+    assert is_environmental("ANTHROPIC_API_KEY is not set.")
+    assert is_environmental("the API returned HTTP 401 Unauthorized")
+    assert is_environmental("API request failed: HTTP 529")
+    assert is_environmental("could not start agent: [WinError 2]")
+    assert not is_environmental("Traceback (most recent call last): KeyError: 'x'")
+
+    assert is_transient("API request failed: HTTP 429")
+    assert is_transient("the API returned HTTP 503")
+    assert not is_transient("timed out after 300s")
+    assert not is_transient("ANTHROPIC_API_KEY is not set.")

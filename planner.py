@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import re
+import textwrap
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from config import MAX_AGENTS, Usage, get_llm
+from codeguard import ALLOWED_PACKAGES
+from config import MAX_AGENTS, Usage, complete_structured
+from taskgraph import (
+    sanitise_dependencies,
+    topological_order,
+    wire_sequential_fallback,
+)
 
 # An agent name becomes a filename and a dict key, so it must be a plain
 # snake_case identifier. Anything else is a path-traversal risk.
@@ -48,16 +56,42 @@ class AgentSpec(BaseModel):
     instructions: str = Field(
         description="Detailed instructions this agent must follow to do its single job"
     )
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description="Names of agents in THIS plan whose outputs this agent needs, "
+        "and only those. Agents whose dependencies are all met run at the same "
+        "time, so leave this empty for an agent that works from the task alone.",
+    )
     dependencies: list[str] = Field(
         default_factory=list,
-        description="Extra pip packages this agent needs (usually none; the agent "
-        "runtime is standard library only)",
+        description="Extra pip packages this agent needs (usually none - the whole "
+        "Python standard library is already available). Any name outside the vetted "
+        "list in the prompt is refused, so never invent one.",
     )
 
     @field_validator("name")
     @classmethod
     def _validate_name(cls, value: str) -> str:
         return safe_agent_name(value)
+
+    @field_validator("depends_on")
+    @classmethod
+    def _validate_depends_on(cls, value: list[str]) -> list[str]:
+        """Reduce each declared dependency to the same safe form as a name.
+
+        Agent names are sanitised, so the references to them must be run
+        through the identical reduction or "Research Agent" would never match
+        the `research_agent` it plainly means. A name that cannot be made
+        safe is dropped rather than fatal: it could never match any agent,
+        so it is a wire to nowhere, not a reason to fail the plan.
+        """
+        cleaned: list[str] = []
+        for raw in value:
+            try:
+                cleaned.append(safe_agent_name(raw))
+            except ValueError:
+                continue
+        return cleaned
 
     @field_validator("role", "instructions")
     @classmethod
@@ -71,11 +105,22 @@ class AgentSpec(BaseModel):
 class Plan(BaseModel):
     """The full team of agents required for the task.
 
-    `agents` is declared before `reasoning` on purpose: structured output is
-    generated in field order, so the model describes the team it actually
-    emitted instead of committing in prose to agents it then omits.
+    Field order is deliberate throughout, because structured output is
+    generated in that order: `complexity` comes first so the task is sized
+    before the team is designed, and `agents` comes before `reasoning` so the
+    model describes the team it actually emitted instead of committing in
+    prose to agents it then omits.
     """
 
+    complexity: Literal["simple", "standard", "deep"] = Field(
+        default="standard",
+        description="How much thinking this task deserves. 'simple': one obvious "
+        "step with a short answer (a translation, a one-liner, a lookup). "
+        "'deep': high stakes or real intellectual difficulty - research, "
+        "analysis, strategy, long-form writing, non-trivial code - where a "
+        "wrong or shallow answer costs the user something. Everything else "
+        "is 'standard'. The whole run spends effort and money accordingly.",
+    )
     agents: list[AgentSpec] = Field(
         min_length=1,
         max_length=MAX_AGENTS,
@@ -124,6 +169,22 @@ class Plan(BaseModel):
         The sort is stable, so a plan that was already sensible is untouched.
         """
         self.agents = sorted(self.agents, key=lambda spec: stage_rank(spec.name, spec.role))
+        return self
+
+    @model_validator(mode="after")
+    def _wire_the_graph(self) -> Plan:
+        """Make the declared dependencies honest, then order the plan by them.
+
+        Runs after deduplication and the stage sort, so it works on final
+        names in a sensible baseline order. Unknown and self-references are
+        dropped, a plan that declared nothing falls back to the sequential
+        chain every plan had before dependencies existed, and a cycle is
+        broken rather than obeyed. After this, list order and graph order
+        agree: every agent appears after everything it depends on.
+        """
+        sanitise_dependencies(self.agents)
+        wire_sequential_fallback(self.agents)
+        self.agents = list(topological_order(self.agents))
         return self
 
 
@@ -188,6 +249,17 @@ def stage_rank(name: str, role: str = "") -> int:
     return PRODUCE_RANK
 
 
+def _wrap(indent: str, names: list[str], width: int = 78) -> str:
+    """Lay a long list of names out over several indented lines.
+
+    Eighty package names on one line is a wall the model skims past; wrapped,
+    it reads them, which is the whole point of showing the list at all.
+    """
+    return textwrap.fill(
+        ", ".join(names), width=width, initial_indent=indent, subsequent_indent=indent
+    )
+
+
 def canonical_role(name: str, fallback: str = "") -> str:
     """The reusable description of a standard agent, for the library index.
 
@@ -202,25 +274,49 @@ PLANNER_PROMPT = """You are the planner of a multi-agent system.
 You never solve tasks yourself. You decide which specialized agents are needed.
 
 Rules:
+- First grade the task's complexity honestly. 'simple' work gets a fast,
+  cheap run; 'deep' work gets the most careful one. Most tasks are 'standard'.
 - Use the FEWEST agents possible (1 for simple tasks, up to {max_agents} for complex ones).
 - Each agent must have exactly ONE clear responsibility.
-- Agents run in order; each agent receives the outputs of the agents before it.
+- Declare each agent's 'depends_on': the names of the agents whose OUTPUTS it
+  genuinely needs, and only those. Agents whose dependencies are all met run
+  AT THE SAME TIME - so two agents that each work from the task alone should
+  both declare no dependencies, not an invented ordering. An agent that
+  synthesises must depend on every agent it synthesises from.
 - Name each agent in snake_case, e.g. 'research_agent'.
-- Generated agents run on the Python standard library and need no pip packages.
-  Leave 'dependencies' empty unless a package is genuinely unavoidable.
+- Agents can search the web. If the task turns on anything that changed after
+  training - prices, news, releases, listings, "current", "latest", "today" -
+  give an agent the job of looking it up and say so in its instructions. Do
+  not refuse the task and do not let an agent answer from memory instead.
+- Generated agents get the whole Python standard library, which covers most
+  work. Leave 'dependencies' empty unless a package is genuinely unavoidable.
+- If one is unavoidable, it must be named EXACTLY from this list. Any other
+  name is refused, so never invent one - if what you want is not here, plan
+  the agent around the standard library instead:
+{packages}
 - Your 'reasoning' must describe exactly the agents you listed - no more, no fewer.
 
 REUSE COMES FIRST. Agents are written once and kept. An agent whose name already
 exists is free; a new name costs a full code-generation call. So:
-- These agents are ALREADY BUILT and cost nothing to use. Prefer them whenever one
-  can do the job, and use the name EXACTLY as written:
-{library}
+- Prefer an agent that ALREADY EXISTS (the message lists them) whenever one can
+  do the job, and use its name EXACTLY as written.
 - If none fits, prefer one of these standard names before inventing your own:
 {standard}
 - Describe every agent by its FUNCTION, never by this task's subject.
   Write "gather facts about the subject of the task", not "research electric
   scooters". A subject-specific agent can never be reused and costs full price
   every time.
+"""
+
+# What changes between runs, and therefore may NOT live in the cached block.
+#
+# The library catalogue is ranked by use count, so it is rewritten by almost
+# every run. Holding it in the cached prefix meant the whole 1,400-token
+# policy was invalidated each time - paying the cache-write premium and never
+# once collecting the discount. Volatile text goes in the message; only text
+# that is byte-identical between runs earns a cache breakpoint.
+TASK_PROMPT = """Agents already built and free to use (prefer these):
+{library}
 
 User task:
 {task}
@@ -230,33 +326,26 @@ User task:
 def plan_agents(task: str, usage: Usage | None = None) -> Plan:
     """Ask the main LLM to break the task into a team of agent specs.
 
-    include_raw keeps the underlying message reachable, so the planning call's
-    token usage is accounted for like every other call.
+    The reply is constrained to the Plan schema by the API itself, so a
+    malformed plan is a request error rather than something to salvage here.
     """
+    from config import cached_system
     from library import describe_for_planner
 
-    llm = get_llm().with_structured_output(Plan, include_raw=True)
-    result = llm.invoke(
-        PLANNER_PROMPT.format(
-            task=task,
-            max_agents=MAX_AGENTS,
-            library=describe_for_planner(),
-            standard="\n".join(
-                f"  - {name} - {role}" for name, role in STANDARD_AGENTS.items()
-            ),
-        )
+    # The rules, the vetted package list and the standard vocabulary are
+    # byte-identical on every run, so they travel as one cached system block:
+    # roughly 1,400 tokens re-read at cache price instead of full price.
+    policy = PLANNER_PROMPT.format(
+        max_agents=MAX_AGENTS,
+        standard="\n".join(f"  - {name} - {role}" for name, role in STANDARD_AGENTS.items()),
+        packages=_wrap("  ", sorted(ALLOWED_PACKAGES)),
     )
-
-    if isinstance(result, dict):
-        if usage is not None and result.get("raw") is not None:
-            usage.record(result["raw"])
-        if result.get("parsing_error"):
-            raise ValueError(f"planner returned an invalid plan: {result['parsing_error']}")
-        result = result.get("parsed")
-
-    if isinstance(result, Plan):
-        return result
-    return Plan.model_validate(result)
+    return complete_structured(
+        TASK_PROMPT.format(task=task, library=describe_for_planner()),
+        Plan,
+        system=cached_system(policy),
+        usage=usage,
+    )
 
 
 def upstream_names(agents: list[AgentSpec], index: int) -> list[str]:

@@ -12,6 +12,7 @@ import pytest
 import generator
 from codeguard import check_agent_source
 from config import USAGE_MARKER
+from planner import AgentSpec
 
 FENCE = "`" * 3
 BODY = (
@@ -64,7 +65,7 @@ def test_assembled_agent_is_valid_and_self_contained():
     imported = {
         node.names[0].name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import)
     }
-    assert "langchain_openai" not in imported  # H6: no framework import
+    assert "anthropic" not in imported  # H6: no SDK import
     assert imported <= {"json", "os", "re", "sys", "time", "urllib"}
 
 
@@ -94,13 +95,47 @@ def test_upstream_names_are_listed_verbatim():
 
 
 def test_prompt_carries_the_upstream_contract():
-    prompt = generator.GENERATOR_PROMPT.format(
+    prompt = generator.GENERATOR_BRIEF.format(
         name="summary_agent",
         role="r",
         instructions="i",
         upstream_contract=generator._upstream_contract(["research_agent"]),
+        packages=generator._package_rule(AgentSpec(name="summary_agent", role="r", instructions="i")),
     )
     assert '"research_agent"' in prompt
+
+
+def test_the_static_policy_is_separate_from_the_per_agent_brief():
+    """The cached half must hold no per-agent text, or the cache never hits."""
+    policy = generator.GENERATOR_POLICY
+    assert "call_llm(" in policy  # the contract lives in the cached half
+    assert "REUSABLE" in policy
+    assert "{name}" not in policy and "{role}" not in policy
+    assert "{instructions}" not in policy and "{packages}" not in policy
+
+
+# --- an agent may import only what was actually installed for it ----------------
+
+
+def test_an_agent_with_no_dependencies_is_told_not_to_import_one():
+    spec = AgentSpec(name="summary_agent", role="r", instructions="i")
+    assert "Do not import one" in generator._package_rule(spec)
+
+
+def test_declared_packages_are_named_by_their_import_name():
+    """The planner declares 'pillow'; the code has to write 'import PIL'."""
+    spec = AgentSpec(
+        name="chart_agent", role="r", instructions="i", dependencies=["pillow", "qrcode>=7.0"]
+    )
+    rule = generator._package_rule(spec)
+    assert "PIL" in rule and "qrcode" in rule
+    assert "pillow" not in rule
+
+
+def test_a_package_that_would_be_refused_is_never_offered():
+    """It is not installed, so telling the model it exists guarantees a crash."""
+    spec = AgentSpec(name="odd_agent", role="r", instructions="i", dependencies=["leftpad"])
+    assert "Do not import one" in generator._package_rule(spec)
 
 
 # --- the generated runtime actually behaves (no network involved) ---------------
@@ -153,8 +188,234 @@ def test_missing_api_key_fails_loudly(tmp_path, monkeypatch):
         tmp_path, body, {"task": "t", "previous_outputs": {}}, {"HOME": str(tmp_path)}
     )
     assert completed.returncode != 0
-    assert "OPENROUTER_API_KEY" in completed.stderr
+    assert "ANTHROPIC_API_KEY" in completed.stderr
 
 
 def test_usage_marker_constant_matches_config():
     assert USAGE_MARKER in generator._render_header()
+
+
+# --- the wire shape of the agent runtime's Messages API call --------------------
+
+
+def _load_runtime(monkeypatch, reply, captured):
+    """Exec the trusted header in isolation, with the network stubbed out.
+
+    `reply` may be one payload or a list of them, so a paused turn and its
+    resumption can be scripted.
+    """
+    import urllib.request
+
+    namespace: dict = {}
+    exec(compile(generator._render_header(), "<agent-runtime>", "exec"), namespace)
+
+    replies = list(reply) if isinstance(reply, list) else [reply]
+    captured["bodies"] = []
+
+    class _Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def _fake_urlopen(request, timeout=None):
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["bodies"].append(captured["body"])
+        return _Response(replies.pop(0) if len(replies) > 1 else replies[0])
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    return namespace
+
+
+def test_call_llm_sends_a_messages_api_request(monkeypatch):
+    captured: dict = {}
+    reply = {"content": [{"type": "text", "text": "hi"}], "usage": {"input_tokens": 4}}
+    runtime = _load_runtime(monkeypatch, reply, captured)
+
+    runtime["call_llm"]("material", system="rules", max_tokens=99)
+
+    # Header names arrive title-cased through urllib's own normalisation.
+    headers = {name.lower(): value for name, value in captured["headers"].items()}
+    assert headers["x-api-key"] == "sk-ant-test"
+    assert headers["anthropic-version"]
+
+    body = captured["body"]
+    assert body["system"] == "rules"
+    assert body["messages"] == [{"role": "user", "content": "material"}]
+    assert body["max_tokens"] == 99  # required by the API, so never omitted
+    assert "temperature" not in body  # current models reject it
+
+
+def test_call_llm_ignores_temperature_from_older_agents(monkeypatch):
+    """Agents written before the switch still pass it; sending it would 400."""
+    captured: dict = {}
+    reply = {"content": [{"type": "text", "text": "hi"}], "usage": {}}
+    runtime = _load_runtime(monkeypatch, reply, captured)
+
+    runtime["call_llm"]("material", temperature=0.7)
+
+    assert "temperature" not in captured["body"]
+
+
+def test_call_llm_returns_the_answer_not_the_reasoning(monkeypatch):
+    captured: dict = {}
+    reply = {
+        "content": [
+            {"type": "thinking", "thinking": "weighing it up"},
+            {"type": "text", "text": "the answer"},
+        ],
+        "usage": {"input_tokens": 4, "output_tokens": 2},
+    }
+    runtime = _load_runtime(monkeypatch, reply, captured)
+
+    assert runtime["call_llm"]("material") == "the answer"
+
+
+def test_call_llm_reports_usage_on_stderr(monkeypatch, capsys):
+    captured: dict = {}
+    reply = {"content": [{"type": "text", "text": "hi"}],
+             "usage": {"input_tokens": 11, "output_tokens": 5}}
+    runtime = _load_runtime(monkeypatch, reply, captured)
+
+    runtime["call_llm"]("material")
+
+    line = capsys.readouterr().err.strip()
+    assert line.startswith(USAGE_MARKER)
+    assert json.loads(line[len(USAGE_MARKER) :]) == {"input_tokens": 11, "output_tokens": 5}
+
+
+# --- looking things up: the tool is declared, and a paused search resumes -------
+
+
+def test_search_is_off_unless_the_agent_asks_for_it(monkeypatch):
+    """A search costs time and money on every call, so it is never the default."""
+    captured: dict = {}
+    reply = {"content": [{"type": "text", "text": "hi"}], "usage": {}}
+    runtime = _load_runtime(monkeypatch, reply, captured)
+
+    runtime["call_llm"]("material")
+
+    assert "tools" not in captured["body"]
+
+
+def test_search_declares_the_server_side_tool(monkeypatch):
+    captured: dict = {}
+    reply = {"content": [{"type": "text", "text": "hi"}], "usage": {}}
+    runtime = _load_runtime(monkeypatch, reply, captured)
+
+    runtime["call_llm"]("material", search=True)
+
+    tools = captured["body"]["tools"]
+    assert tools[0]["name"] == "web_search"
+    assert tools[0]["type"].startswith("web_search_")
+    assert tools[0]["max_uses"] >= 1  # the cost ceiling, not decoration
+
+
+def test_a_paused_search_is_resumed_and_the_answer_still_arrives(monkeypatch):
+    """The server pauses a long search and expects the turn handed straight back."""
+    captured: dict = {}
+    paused = {
+        "content": [{"type": "server_tool_use", "name": "web_search"}],
+        "stop_reason": "pause_turn",
+        "usage": {"input_tokens": 100},
+    }
+    finished = {
+        "content": [{"type": "text", "text": "the researched answer"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 200},
+    }
+    runtime = _load_runtime(monkeypatch, [paused, finished], captured)
+
+    assert runtime["call_llm"]("material", search=True) == "the researched answer"
+
+    # The resumed request carries the paused turn back, with no "continue" text.
+    resumed = captured["bodies"][-1]["messages"]
+    assert len(resumed) == 2
+    assert resumed[-1]["role"] == "assistant"
+
+
+def test_a_search_that_never_finishes_does_not_loop_forever(monkeypatch):
+    captured: dict = {}
+    paused = {
+        "content": [{"type": "server_tool_use", "name": "web_search"}],
+        "stop_reason": "pause_turn",
+        "usage": {},
+    }
+    runtime = _load_runtime(monkeypatch, paused, captured)
+
+    runtime["call_llm"]("material", search=True)
+
+    assert len(captured["bodies"]) <= generator.MAX_CONTINUATIONS + 1
+
+
+def test_search_results_are_not_mistaken_for_the_answer(monkeypatch):
+    captured: dict = {}
+    reply = {
+        "content": [
+            {"type": "server_tool_use", "name": "web_search"},
+            {"type": "web_search_tool_result", "content": [{"title": "a page"}]},
+            {"type": "text", "text": "the answer"},
+        ],
+        "usage": {},
+    }
+    runtime = _load_runtime(monkeypatch, reply, captured)
+
+    assert runtime["call_llm"]("material", search=True) == "the answer"
+
+
+# --- a second model call is spent only where the run earned it -----------------
+
+
+def test_the_runtime_offers_a_deep_helper():
+    """One agent file must serve a cheap task and an expensive one alike."""
+    source = generator.assemble_agent("def run(task, previous_outputs):\n    return 'x'\n")
+    assert "def deep():" in source
+    assert 'EFFORT in ("high", "xhigh", "max")' in source
+
+
+def test_the_policy_gates_refinement_on_deep():
+    policy = generator.GENERATOR_POLICY
+    assert "if deep():" in policy
+    assert "ONE model call is the default" in policy
+    assert "deep() -> bool" in policy
+
+
+def test_a_generated_agent_may_call_deep_without_redefining_it():
+    """codeguard must accept the helper's use in generated logic."""
+    from codeguard import check_agent_source
+
+    body = (
+        "def run(task, previous_outputs):\n"
+        "    draft = call_llm(task)\n"
+        "    if deep():\n"
+        "        draft = call_llm('improve: ' + draft)\n"
+        "    return draft\n"
+    )
+    assert check_agent_source(generator.assemble_agent(body)) == []
+
+
+def test_the_forbidden_word_list_names_acronyms_to_the_generator():
+    """The subject ban is what stops an agent hardcoding today's topic.
+
+    It is rendered from task_subjects(), so an acronym missing there is an
+    acronym the generator is never warned about - which is how a code_agent
+    came to carry "QR code images" in its own prompt forever.
+    """
+    from topicguard import task_subjects
+
+    banned = task_subjects("write a python code to convert any link or text into qr code")
+    assert "qr" in banned
+    rendered = generator._SUBJECT_BAN.format(
+        words=", ".join(repr(word) for word in banned)
+    )
+    assert "'qr'" in rendered
+    assert "FORBIDDEN WORDS" in rendered

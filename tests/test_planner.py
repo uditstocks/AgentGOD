@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
+import planner
+from codeguard import ALLOWED_PACKAGES
 from config import MAX_AGENTS
 from planner import AgentSpec, Plan, safe_agent_name, upstream_names
 
 
-def spec(name: str = "research_agent", **kwargs) -> AgentSpec:
-    fields = {"role": "r", "instructions": "i"}
+def spec(name: str = "research_agent", **kwargs: Any) -> AgentSpec:
+    fields: dict[str, Any] = {"role": "r", "instructions": "i"}
     fields.update(kwargs)
     return AgentSpec(name=name, **fields)
 
@@ -168,8 +172,10 @@ def test_canonical_role_replaces_a_task_specific_description():
 # --- M3: agents are generated before the prose that describes them --------------
 
 
-def test_agents_field_precedes_reasoning():
-    assert list(Plan.model_fields) == ["agents", "reasoning"]
+def test_field_order_is_grade_then_team_then_reasoning():
+    """Structured output is generated in field order: the task is sized first,
+    the team is emitted next, and the prose describes what actually exists."""
+    assert list(Plan.model_fields) == ["complexity", "agents", "reasoning"]
 
 
 # --- C3: upstream names are exactly the preceding agents ------------------------
@@ -180,3 +186,123 @@ def test_upstream_names_are_the_preceding_agents():
     assert upstream_names(agents, 0) == []
     assert upstream_names(agents, 1) == ["a_agent"]
     assert upstream_names(agents, 2) == ["a_agent", "b_agent"]
+
+
+# --- the planner is shown the packages it may ask for --------------------------
+
+
+def test_the_prompt_lists_every_vetted_package():
+    """A name it cannot see is a name it invents, and an invented name is refused."""
+    rendered = planner.PLANNER_PROMPT.format(
+        task="t",
+        max_agents=4,
+        library="",
+        standard="",
+        packages=planner._wrap("  ", sorted(ALLOWED_PACKAGES)),
+    )
+    for name in ALLOWED_PACKAGES:
+        assert name in rendered
+
+
+def test_the_package_list_wraps_instead_of_running_off_the_line():
+    lines = planner._wrap("  ", sorted(ALLOWED_PACKAGES)).splitlines()
+    assert len(lines) > 1
+    assert all(line.startswith("  ") and len(line) <= 78 for line in lines)
+
+
+# --- the dependency graph arrives untrusted and leaves honest -------------------
+
+
+def test_declared_dependencies_are_sanitised_like_names():
+    plan = Plan(
+        agents=[
+            spec("research_agent"),
+            spec("summary_agent", depends_on=["Research Agent", "ghost_agent"]),
+        ],
+        reasoning="r",
+    )
+    by_name = {s.name: s for s in plan.agents}
+    assert by_name["summary_agent"].depends_on == ["research_agent"]
+
+
+def test_a_plan_with_no_declared_edges_falls_back_to_the_chain():
+    plan = Plan(
+        agents=[spec("research_agent"), spec("analysis_agent"), spec("summary_agent")],
+        reasoning="r",
+    )
+    deps = [s.depends_on for s in plan.agents]
+    assert deps == [[], ["research_agent"], ["research_agent", "analysis_agent"]]
+
+
+def test_declared_independence_is_honoured():
+    plan = Plan(
+        agents=[
+            spec("research_agent"),
+            spec("comparison_agent"),
+            spec("summary_agent", depends_on=["research_agent", "comparison_agent"]),
+        ],
+        reasoning="r",
+    )
+    by_name = {s.name: s for s in plan.agents}
+    assert by_name["research_agent"].depends_on == []
+    assert by_name["comparison_agent"].depends_on == []
+
+
+def test_the_plan_is_reordered_so_producers_precede_consumers():
+    plan = Plan(
+        agents=[
+            spec("omega_writer", role="write the piece", depends_on=["fact_finder"]),
+            spec("fact_finder", role="gather facts"),
+        ],
+        reasoning="r",
+    )
+    assert [s.name for s in plan.agents] == ["fact_finder", "omega_writer"]
+
+
+def test_complexity_defaults_to_standard():
+    plan = Plan(agents=[spec()], reasoning="r")
+    assert plan.complexity == "standard"
+
+
+def test_complexity_accepts_the_three_grades():
+    for grade in ("simple", "standard", "deep"):
+        assert Plan(agents=[spec()], reasoning="r", complexity=grade).complexity == grade
+
+
+# --- the cached prefix must hold nothing that changes between runs -------------
+
+
+def test_the_cached_policy_holds_no_volatile_text():
+    """The library catalogue is re-ranked by use count on almost every run.
+
+    Holding it in the cached prefix invalidated the whole ~1,400-token block
+    each time - paying the cache-write premium and never once collecting the
+    discount. Volatile text belongs in the message.
+    """
+    from codeguard import ALLOWED_PACKAGES
+    from config import MAX_AGENTS
+    from planner import PLANNER_PROMPT, STANDARD_AGENTS, TASK_PROMPT, _wrap
+
+    policy = PLANNER_PROMPT.format(
+        max_agents=MAX_AGENTS,
+        standard="\n".join(f"  - {n} - {r}" for n, r in STANDARD_AGENTS.items()),
+        packages=_wrap("  ", sorted(ALLOWED_PACKAGES)),
+    )
+    # Rendering twice must give byte-identical text, or the cache cannot hit.
+    again = PLANNER_PROMPT.format(
+        max_agents=MAX_AGENTS,
+        standard="\n".join(f"  - {n} - {r}" for n, r in STANDARD_AGENTS.items()),
+        packages=_wrap("  ", sorted(ALLOWED_PACKAGES)),
+    )
+    assert policy == again
+    assert "{library}" not in policy  # the catalogue is not a policy field
+    assert "{library}" in TASK_PROMPT  # it travels with the task instead
+
+
+def test_the_task_message_still_shows_the_library():
+    """Moving it out of the cache must not hide it from the planner."""
+    from planner import TASK_PROMPT
+
+    rendered = TASK_PROMPT.format(task="write a haiku", library="  - writer_agent: write prose")
+    assert "writer_agent" in rendered
+    assert "write a haiku" in rendered

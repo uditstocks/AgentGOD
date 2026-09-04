@@ -40,11 +40,26 @@ class TaskEvents:
     def deps_checked(self, report: DependencyReport) -> None:
         """Dependency resolution finished, well or badly."""
 
+    def wave_started(self, index: int, total: int, names: list[str]) -> None:
+        """One round of execution began.
+
+        Every agent in `names` has all of its inputs already, and a wave with
+        more than one name is running them at the same time - the dependency
+        graph proved that changes nothing about the data each one sees.
+        """
+
     def agent_started(self, name: str, index: int, total: int) -> None:
         """One agent subprocess is about to run."""
 
     def agent_repairing(self, name: str, attempt: int, attempts: int, error: str) -> None:
         """A crashed agent is being regenerated from its own error output."""
+
+    def agent_retrying(self, name: str, reason: str) -> None:
+        """An agent hit an infrastructure error, so the same file runs again.
+
+        Distinct from repairing: the code was fine, the world was not, and
+        nothing is being rewritten or re-billed to fix it.
+        """
 
     def agent_unrepairable(self, name: str, reason: str) -> None:
         """Regeneration itself failed; the agent keeps its last error."""
@@ -54,3 +69,22 @@ class TaskEvents:
 
     def merge_started(self, survivors: int) -> None:
         """The merger began collapsing `survivors` outputs into one answer."""
+
+    def council_convened(self) -> None:
+        """The adversarial critic began cross-examining the merged answer."""
+
+    def council_ruled(self, improved: bool, weaknesses: str) -> None:
+        """The council finished: the answer stood, or was refined against `weaknesses`."""
+
+    def answer_judged(self, done: bool, missing: str) -> None:
+        """The main agent read its own answer back against the request."""
+
+    def revision_started(self, attempt: int, attempts: int, missing: str) -> None:
+        """The answer fell short, so the agents are running again on the gap."""
+
+    def spend_updated(self, calls: int, cost_usd: float | None) -> None:
+        """The run's spend so far moved: total LLM calls, and cost when priceable.
+
+        Emitted whenever the total changes enough to matter, so an interface
+        can show cost while it accrues instead of revealing it at the end.
+        """

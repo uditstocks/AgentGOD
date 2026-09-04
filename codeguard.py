@@ -12,42 +12,143 @@ No AI and no I/O here, so this module is fully unit-testable.
 from __future__ import annotations
 
 import ast
+import sys
 
-# Standard-library modules a single-LLM-call agent could legitimately need.
-ALLOWED_STDLIB = frozenset(
+# Standard-library modules an agent may NOT import. Everything else in the
+# standard library is allowed, because a curated subset turned out to refuse
+# ordinary work - `csv`, `sqlite3`, `zipfile`, `hashlib`, `difflib` and three
+# hundred others were rejected for no reason but absence from a list.
+#
+# What stays blocked is only what would defeat a check this module already
+# makes elsewhere: shelling out, and turning data into running code. Banning
+# `subprocess` while banning `eval()` is one rule, not two.
+BLOCKED_STDLIB = frozenset(
     {
-        "base64",
-        "collections",
-        "dataclasses",
-        "datetime",
-        "decimal",
-        "enum",
-        "fractions",
-        "functools",
-        "html",
-        "itertools",
-        "json",
-        "math",
-        "os",
-        "pathlib",
-        "random",
-        "re",
-        "statistics",
-        "string",
-        "sys",
-        "textwrap",
-        "time",
-        "typing",
-        "unicodedata",
-        "urllib",
-        "uuid",
+        # spawns a process or loads native code
+        "subprocess",
+        "multiprocessing",
+        "ctypes",
+        "pty",
+        "socket",
+        # executes code chosen at runtime, which is what `eval` is banned for
+        "importlib",
+        "runpy",
+        "code",
+        "codeop",
+        "pickle",
+        "marshal",
+        "shelve",
+        # rewrites the filesystem wholesale
+        "shutil",
     }
 )
 
-# Import names unlocked by the vetted pip packages in executor.ALLOWED_PACKAGES.
-ALLOWED_THIRD_PARTY = frozenset(
-    {"bs4", "dateutil", "lxml", "markdown", "numpy", "pandas", "requests", "tabulate", "yaml"}
-)
+ALLOWED_STDLIB = frozenset(
+    name for name in sys.stdlib_module_names if not name.startswith("_")
+) - BLOCKED_STDLIB
+
+# Vetted pip packages a generated agent may use, mapped to their import names.
+# A model-invented package name is refused rather than installed: hallucinated
+# names are a supply-chain vector, not a typo to be helpfully resolved. This is
+# the single source of truth - executor.py installs from it, and the import
+# check below derives from it, so the two can never drift apart.
+ALLOWED_PACKAGES: dict[str, str] = {
+    # web and HTTP
+    "aiohttp": "aiohttp",
+    "beautifulsoup4": "bs4",
+    "fastapi": "fastapi",
+    "feedparser": "feedparser",
+    "flask": "flask",
+    "html5lib": "html5lib",
+    "httpx": "httpx",
+    "jinja2": "jinja2",
+    "lxml": "lxml",
+    "requests": "requests",
+    "starlette": "starlette",
+    "urllib3": "urllib3",
+    "uvicorn": "uvicorn",
+    "werkzeug": "werkzeug",
+    # data and maths
+    "matplotlib": "matplotlib",
+    "networkx": "networkx",
+    "numpy": "numpy",
+    "openpyxl": "openpyxl",
+    "pandas": "pandas",
+    "plotly": "plotly",
+    "pyarrow": "pyarrow",
+    "scikit-learn": "sklearn",
+    "scipy": "scipy",
+    "seaborn": "seaborn",
+    "statsmodels": "statsmodels",
+    "sympy": "sympy",
+    "tabulate": "tabulate",
+    "xlsxwriter": "xlsxwriter",
+    # documents and text
+    "chardet": "chardet",
+    "ftfy": "ftfy",
+    "inflect": "inflect",
+    "markdown": "markdown",
+    "nltk": "nltk",
+    "num2words": "num2words",
+    "pdfplumber": "pdfplumber",
+    "pygments": "pygments",
+    "pypdf": "pypdf",
+    "python-docx": "docx",
+    "python-pptx": "pptx",
+    "python-slugify": "slugify",
+    "rapidfuzz": "rapidfuzz",
+    "regex": "regex",
+    "reportlab": "reportlab",
+    "textstat": "textstat",
+    "unidecode": "unidecode",
+    # configuration and serialisation
+    "jsonschema": "jsonschema",
+    "orjson": "orjson",
+    "python-dotenv": "dotenv",
+    "pyyaml": "yaml",
+    "toml": "toml",
+    # images and media
+    "imageio": "imageio",
+    "opencv-python": "cv2",
+    "pillow": "PIL",
+    "python-barcode": "barcode",
+    "qrcode": "qrcode",
+    "svgwrite": "svgwrite",
+    # dates, places and locales
+    "arrow": "arrow",
+    "babel": "babel",
+    "humanize": "humanize",
+    "python-dateutil": "dateutil",
+    "pytz": "pytz",
+    # models and validation
+    "attrs": "attrs",
+    "email-validator": "email_validator",
+    "marshmallow": "marshmallow",
+    "phonenumbers": "phonenumbers",
+    "pydantic": "pydantic",
+    "validators": "validators",
+    # terminal output
+    "click": "click",
+    "colorama": "colorama",
+    "rich": "rich",
+    "tqdm": "tqdm",
+    "typer": "typer",
+    # cryptography
+    "bcrypt": "bcrypt",
+    "cryptography": "cryptography",
+    "passlib": "passlib",
+    # databases
+    "pymongo": "pymongo",
+    "redis": "redis",
+    "sqlalchemy": "sqlalchemy",
+    # odds and ends
+    "emoji": "emoji",
+    "faker": "faker",
+    "pint": "pint",
+}
+
+# Import names unlocked by the packages above.
+ALLOWED_THIRD_PARTY = frozenset(ALLOWED_PACKAGES.values())
 
 ALLOWED_MODULES = ALLOWED_STDLIB | ALLOWED_THIRD_PARTY
 
@@ -127,21 +228,31 @@ class _Inspector(ast.NodeVisitor):
         self.allowed_modules = allowed_modules
         self.problems: list[str] = []
 
+    def _refuse(self, lineno: int, name: str) -> str:
+        """Why this import was refused, in terms the model can act on.
+
+        The allowlist is now most of the standard library, so naming its
+        members is no longer a hint - it is three hundred words of noise in a
+        repair prompt. The reason is the useful part.
+        """
+        reason = (
+            "it shells out, writes the filesystem or runs code chosen at runtime"
+            if _root_module(name) in BLOCKED_STDLIB
+            else "it is neither the standard library nor a vetted package"
+        )
+        return f"line {lineno}: import of {name!r} is not allowed - {reason}"
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            module = _root_module(alias.name)
-            if module not in self.allowed_modules:
-                self.problems.append(
-                    f"line {node.lineno}: import of {alias.name!r} is not allowed "
-                    f"(permitted: {', '.join(sorted(self.allowed_modules))})"
-                )
+            if _root_module(alias.name) not in self.allowed_modules:
+                self.problems.append(self._refuse(node.lineno, alias.name))
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.level:
             self.problems.append(f"line {node.lineno}: relative imports are not allowed")
         elif node.module and _root_module(node.module) not in self.allowed_modules:
-            self.problems.append(f"line {node.lineno}: import from {node.module!r} is not allowed")
+            self.problems.append(self._refuse(node.lineno, node.module))
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:

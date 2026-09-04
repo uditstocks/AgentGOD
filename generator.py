@@ -1,28 +1,34 @@
 """Step 2: Generate the Python source for each planned agent.
 
 The LLM writes only the agent's own logic (``run()`` plus any helpers it needs).
-The surrounding runtime - imports, the OpenRouter call, the stdin/stdout
+The surrounding runtime - imports, the Messages API call, the stdin/stdout
 contract - comes from a fixed, trusted header defined here. That removes a
 whole class of failure: the boilerplate can no longer drift, and every
-generated agent is standard-library only, so it starts in ~0.05 s instead of
-paying a ~6 s LangChain import.
+generated agent is standard-library only, so it starts in ~0.05 s and needs
+no install step - not even the Anthropic SDK.
 """
 
 from __future__ import annotations
 
 import re
 
-from codeguard import check_agent_source
+from codeguard import ALLOWED_PACKAGES, check_agent_source
 from config import (
+    ANTHROPIC_API_URL,
+    ANTHROPIC_VERSION,
     CODEGEN_ATTEMPTS,
+    LLM_EFFORT,
     MAX_CHARS_PER_INPUT,
+    MAX_CONTINUATIONS,
     MODEL,
-    OPENROUTER_CHAT_URL,
     USAGE_MARKER,
+    WEB_SEARCH_MAX_USES,
+    WEB_SEARCH_TOOL_TYPE,
     Usage,
-    get_llm,
-    response_text,
+    cached_system,
+    complete,
 )
+from executor import requirement_name
 from planner import AgentSpec
 from topicguard import check_task_is_used, check_topic_leakage, task_subjects
 
@@ -30,6 +36,11 @@ from topicguard import check_task_is_used, check_topic_leakage, task_subjects
 # the header contains literal braces that .format() would choke on.
 _MODEL_MARKER = "@@MODEL@@"
 _API_URL_MARKER = "@@API_URL@@"
+_API_VERSION_MARKER = "@@API_VERSION@@"
+_EFFORT_MARKER = "@@EFFORT@@"
+_SEARCH_TYPE_MARKER = "@@SEARCH_TYPE@@"
+_SEARCH_USES_MARKER = "@@SEARCH_MAX_USES@@"
+_CONTINUATIONS_MARKER = "@@MAX_CONTINUATIONS@@"
 _MAX_CHARS_MARKER = "@@MAX_CHARS@@"
 _USAGE_MARKER_MARKER = "@@USAGE_MARKER@@"
 _NAME_MARKER = "@@NAME@@"
@@ -48,9 +59,9 @@ task that needs the same capability.
              stdout  this agent's result, as plain text
              stderr  one usage line, prefixed @@USAGE_MARKER@@
 
-  runtime    Python standard library only - no install step, no framework,
+  runtime    Python standard library only - no install step, no SDK,
              no import of AgentGod itself. Starts in ~0.05s and runs
-             standalone anywhere a .env with an OpenRouter key is reachable.
+             standalone anywhere a .env with an Anthropic key is reachable.
 
   model      @@MODEL@@ (override with the MODEL environment variable)
 """
@@ -72,11 +83,23 @@ import urllib.request
 from pathlib import Path
 
 API_URL = "@@API_URL@@"
+API_VERSION = "@@API_VERSION@@"
 MODEL = os.environ.get("MODEL", "@@MODEL@@")
+EFFORT = os.environ.get("LLM_EFFORT", "@@EFFORT@@")
 LLM_TIMEOUT_SECONDS = 120
 LLM_ATTEMPTS = 3
+LLM_MAX_TOKENS = 4096
 MAX_CHARS_PER_INPUT = @@MAX_CHARS@@
 USAGE_MARKER = "@@USAGE_MARKER@@"
+
+# Search runs on the API's own servers, so this agent needs no scraper and no
+# second key - it just declares the tool and reads the finished answer.
+WEB_SEARCH_TOOL = {
+    "type": "@@SEARCH_TYPE@@",
+    "name": "web_search",
+    "max_uses": @@SEARCH_MAX_USES@@,
+}
+MAX_CONTINUATIONS = @@MAX_CONTINUATIONS@@
 
 
 def api_key() -> str:
@@ -84,7 +107,7 @@ def api_key() -> str:
 
     The fallback is what lets an archived agent run standalone.
     """
-    key = os.environ.get("OPENROUTER_API_KEY")
+    key = os.environ.get("ANTHROPIC_API_KEY")
     if key:
         return key
     for folder in Path(__file__).resolve().parents:
@@ -93,37 +116,21 @@ def api_key() -> str:
             continue
         for line in env_file.read_text(encoding="utf-8").splitlines():
             name, separator, value = line.partition("=")
-            if separator and name.strip() == "OPENROUTER_API_KEY":
+            if separator and name.strip() == "ANTHROPIC_API_KEY":
                 return value.strip().strip('"').strip("'")
-    raise SystemExit("OPENROUTER_API_KEY is not set.")
+    raise SystemExit("ANTHROPIC_API_KEY is not set.")
 
 
-def call_llm(prompt, system=None, temperature=None, max_tokens=None):
-    """One chat completion against OpenRouter, with retries on transient errors.
-
-    `system` carries the agent's standing identity and rules; `prompt` carries
-    this run's material. Separating them is what stops a long upstream result
-    from diluting the instructions - the model weighs a system message as
-    policy rather than as more input to summarise.
-    """
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": str(system)})
-    messages.append({"role": "user", "content": str(prompt)})
-
-    payload_out = {"model": MODEL, "messages": messages}
-    if temperature is not None:
-        payload_out["temperature"] = float(temperature)
-    if max_tokens is not None:
-        payload_out["max_tokens"] = int(max_tokens)
-
+def _post(payload_out):
+    """One HTTP request to the Messages API, with retries on transient errors."""
     body = json.dumps(payload_out).encode("utf-8")
     request = urllib.request.Request(
         API_URL,
         data=body,
         headers={
-            "Authorization": "Bearer " + api_key(),
-            "Content-Type": "application/json",
+            "x-api-key": api_key(),
+            "anthropic-version": API_VERSION,
+            "content-type": "application/json",
         },
     )
 
@@ -137,20 +144,75 @@ def call_llm(prompt, system=None, temperature=None, max_tokens=None):
         except urllib.error.HTTPError as error:
             last_error = "HTTP %s %s" % (error.code, error.reason)
             if error.code < 500 and error.code != 429:
-                raise SystemExit("OpenRouter returned " + last_error)
+                raise SystemExit("the API returned " + last_error)
         except (urllib.error.URLError, TimeoutError, ValueError) as error:
             last_error = "%s: %s" % (type(error).__name__, error)
         if attempt < LLM_ATTEMPTS - 1:
             time.sleep(2 ** attempt)
 
     if payload is None:
-        raise SystemExit("OpenRouter request failed: %s" % last_error)
-    if "choices" not in payload:
-        raise SystemExit("Unexpected OpenRouter response: %s" % json.dumps(payload)[:400])
+        raise SystemExit("API request failed: %s" % last_error)
+    if "content" not in payload:
+        raise SystemExit("Unexpected API response: %s" % json.dumps(payload)[:400])
 
     # Token usage goes to stderr; stdout is reserved for the result.
     print(USAGE_MARKER + " " + json.dumps(payload.get("usage") or {}), file=sys.stderr)
-    return payload["choices"][0]["message"]["content"] or ""
+    return payload
+
+
+def answer_text(payload):
+    """The answer out of a reply's content blocks.
+
+    Only `text` blocks are the answer. A reasoning model puts a thinking block
+    first and a search puts its results in between; returning either instead
+    of the answer is a silent, whole-run failure.
+    """
+    return "".join(
+        str(block.get("text") or "")
+        for block in payload.get("content") or []
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
+def call_llm(prompt, system=None, temperature=None, max_tokens=None, search=False):
+    """One Messages API call, returned as plain text.
+
+    `system` carries the agent's standing identity and rules; `prompt` carries
+    this run's material. Separating them is what stops a long upstream result
+    from diluting the instructions - the API weighs a system prompt as policy
+    rather than as more input to summarise.
+
+    `search=True` lets the model look things up before it answers. The search
+    runs on the API's servers, so nothing is fetched from this process; a long
+    search session pauses partway and is resumed by the loop below.
+
+    `temperature` is accepted and ignored. The current models reject it, and
+    silently dropping it here is what keeps agents written before the switch
+    running unchanged; pace the model with the LLM_EFFORT environment variable
+    instead.
+    """
+    payload_out = {
+        "model": MODEL,
+        "max_tokens": int(max_tokens) if max_tokens else LLM_MAX_TOKENS,
+        "output_config": {"effort": EFFORT},
+        "messages": [{"role": "user", "content": str(prompt)}],
+    }
+    if system:
+        payload_out["system"] = str(system)
+    if search:
+        payload_out["tools"] = [WEB_SEARCH_TOOL]
+
+    for _ in range(MAX_CONTINUATIONS + 1):
+        payload = _post(payload_out)
+        if payload.get("stop_reason") != "pause_turn":
+            break
+        # Hand the paused turn straight back. No "continue" message: the
+        # server recognises its own trailing tool block and picks up there.
+        payload_out["messages"].append(
+            {"role": "assistant", "content": payload.get("content") or []}
+        )
+
+    return answer_text(payload)
 
 
 def format_previous(previous_outputs):
@@ -222,6 +284,21 @@ def constraints(task):
 def word_count(text):
     """How many words a draft actually has, for checking a stated limit."""
     return len(str(text).split())
+
+
+def deep():
+    """Whether this run is worth a second model call to polish the draft.
+
+    A refinement pass doubles this agent's output tokens - the expensive
+    kind - so it is spent only where the answer is worth it. The main agent
+    grades every task and sets the effort dial accordingly, which arrives
+    here in the environment: a translation or a one-liner comes back in one
+    call, a deep analysis earns the second one.
+
+    Deciding at runtime rather than at generation time is what keeps this
+    file reusable: the same agent serves a cheap task and an expensive one.
+    """
+    return EFFORT in ("high", "xhigh", "max")
 '''
 
 # The divider that separates the trusted runtime from the generated logic, so
@@ -245,13 +322,12 @@ if __name__ == "__main__":
     print(run(payload["task"], payload.get("previous_outputs") or {}))
 """
 
-GENERATOR_PROMPT = """You are a code generator for a multi-agent system.
+# The half of the generator prompt that never changes: the contract, the
+# helper catalogue, the quality bar and the reuse rule. It is thousands of
+# tokens, identical on every agent of every run, so it travels as a cached
+# system block instead of being re-billed as fresh input each time.
+GENERATOR_POLICY = """You are a code generator for a multi-agent system.
 Write the logic for ONE specialized agent - a professional-grade one.
-
-Agent name: {name}
-Agent role: {role}
-Agent instructions:
-{instructions}
 
 Write ONLY a top-level function with this exact signature, plus any small
 helper functions it needs:
@@ -260,19 +336,22 @@ helper functions it needs:
         ...
 
 Already defined in the module - use them, never redefine them, and do NOT
-write any import statements or an "if __name__" block:
+write an "if __name__" block:
 
-    call_llm(prompt, system=None, temperature=None, max_tokens=None) -> str
+    call_llm(prompt, system=None, max_tokens=None, search=False) -> str
         One LLM call. Put the agent's standing identity and rules in `system`,
-        and this run's material in `prompt`. Use temperature 0.0-0.2 for
-        analysis, extraction and code; 0.7-0.9 for creative writing.
+        and this run's material in `prompt`. There is no temperature setting:
+        steer tone and rigour with the wording of `system`, not a number.
+        `search=True` lets the model look things up on the web before it
+        answers - use it for anything that changed after training (prices,
+        news, releases, listings, "current", "latest", "today"), and leave it
+        off otherwise, because a search costs time and money on every call.
     format_previous(previous_outputs) -> str      # all upstream results, labelled
     upstream(previous_outputs, name, default="") -> str   # one result, safely
     chunk(text, size=...) -> list[str]            # split long material
     constraints(task) -> list[str]                # length/format demands in the task
     word_count(text) -> int                       # for checking a stated limit
-
-{upstream_contract}
+    deep() -> bool                                # is this run worth a second call?
 
 BUILD A REAL SPECIALIST, NOT A ONE-LINE WRAPPER.
 
@@ -292,9 +371,17 @@ BUILD A REAL SPECIALIST, NOT A ONE-LINE WRAPPER.
    so in the prompt and work from what is there rather than pretending.
 5. Handle long material. If the material is longer than one call can hold,
    use chunk() and process the pieces, then combine - never silently truncate.
-6. Where quality genuinely benefits (writing, analysis, code), draft and then
-   make ONE improvement pass over the draft against the task's constraints.
-   Do not do this for simple extraction or translation; two calls cost twice.
+6. ONE model call is the default. A second call doubles what this agent
+   costs, so spend it only where the answer is genuinely worth it AND the
+   run has been graded as deserving it:
+
+       draft = call_llm(...)
+       if deep():
+           draft = call_llm(<improve the draft against the task's constraints>)
+       return draft
+
+   Never refine unconditionally, and never refine simple extraction or
+   translation at all. `deep()` is already defined - do not redefine it.
 7. Return clean final text: no preamble, no "Here is", no meta-commentary.
 
 REUSABLE - the rule this agent is rejected for breaking:
@@ -308,10 +395,25 @@ must arrive through the `task` argument at runtime.
     Not:    "Translate the phrase into French."
 
 Other rules:
-- Standard library only. No imports at all unless truly unavoidable.
-- No file writing, no subprocess, no eval.
+- `json`, `os`, `re`, `sys`, `time`, `urllib` and `pathlib` are already
+  imported. The rest of the standard library is available too - import what
+  you actually need at the top of your code, and nothing you do not.
+- No file writing, no shelling out, no eval. `subprocess`, `multiprocessing`,
+  `shutil`, `socket`, `pickle` and `importlib` are refused.
 - Readable and self-contained. Every line must earn its place.
 - Output ONLY Python code. No explanations, no markdown fences.
+"""
+
+# The per-agent half: what this one agent is, what it will receive, and what
+# it may import. All of it changes between agents, so none of it is cached.
+GENERATOR_BRIEF = """Agent name: {name}
+Agent role: {role}
+Agent instructions:
+{instructions}
+
+{upstream_contract}
+
+{packages}
 """
 
 _FIRST_AGENT_CONTRACT = """This is the FIRST agent, so `previous_outputs` is an empty dict.
@@ -350,8 +452,13 @@ _FENCE_LINE = "`" * 3
 def _fill(template: str) -> str:
     """Fill a template's placeholders with the live configuration."""
     return (
-        template.replace(_API_URL_MARKER, OPENROUTER_CHAT_URL)
+        template.replace(_API_URL_MARKER, ANTHROPIC_API_URL)
+        .replace(_API_VERSION_MARKER, ANTHROPIC_VERSION)
         .replace(_MODEL_MARKER, MODEL)
+        .replace(_EFFORT_MARKER, LLM_EFFORT)
+        .replace(_SEARCH_TYPE_MARKER, WEB_SEARCH_TOOL_TYPE)
+        .replace(_SEARCH_USES_MARKER, str(WEB_SEARCH_MAX_USES))
+        .replace(_CONTINUATIONS_MARKER, str(MAX_CONTINUATIONS))
         .replace(_MAX_CHARS_MARKER, str(MAX_CHARS_PER_INPUT))
         .replace(_USAGE_MARKER_MARKER, USAGE_MARKER)
     )
@@ -398,6 +505,24 @@ def assemble_agent(body: str, spec: AgentSpec | None = None) -> str:
     )
 
 
+def _package_rule(spec: AgentSpec) -> str:
+    """What this agent may import beyond the standard library, if anything.
+
+    Only the packages the planner declared for THIS agent are installed, so
+    listing the whole vetted catalogue here would invite an import of
+    something that is not on the machine.
+    """
+    names = (requirement_name(dependency) for dependency in spec.dependencies)
+    importable = sorted({ALLOWED_PACKAGES[name] for name in names if name in ALLOWED_PACKAGES})
+    if not importable:
+        return "- No third-party package is installed for this agent. Do not import one."
+    return (
+        "- These third-party packages are installed and may be imported: "
+        + ", ".join(importable)
+        + ". No other one is."
+    )
+
+
 def _upstream_contract(upstream: list[str]) -> str:
     if not upstream:
         return _FIRST_AGENT_CONTRACT
@@ -410,6 +535,8 @@ def generate_agent_code(
     feedback: str | None = None,
     usage: Usage | None = None,
     task: str = "",
+    effort: str | None = None,
+    model: str | None = None,
 ) -> str:
     """Return validated, ready-to-run source for one agent.
 
@@ -422,11 +549,12 @@ def generate_agent_code(
     the generated source against it, because an agent that hardcodes today's
     subject is wrong on every task after this one.
     """
-    prompt = GENERATOR_PROMPT.format(
+    prompt = GENERATOR_BRIEF.format(
         name=spec.name,
         role=spec.role,
         instructions=spec.instructions,
         upstream_contract=_upstream_contract(upstream or []),
+        packages=_package_rule(spec),
     )
     forbidden = task_subjects(task)
     if forbidden:
@@ -434,7 +562,6 @@ def generate_agent_code(
     if feedback:
         prompt += _REPAIR_PROMPT.format(problems=feedback)
 
-    llm = get_llm(max_tokens=4000)
     problems: list[str] = []
     for _ in range(CODEGEN_ATTEMPTS):
         attempt_prompt = prompt
@@ -443,10 +570,15 @@ def generate_agent_code(
                 problems="\n".join(f"- {problem}" for problem in problems)
             )
 
-        response = llm.invoke(attempt_prompt)
-        if usage is not None:
-            usage.record(response)
-        body = _strip_code_fences(response_text(response)).strip()
+        reply = complete(
+            attempt_prompt,
+            system=cached_system(GENERATOR_POLICY),
+            max_tokens=8000,
+            usage=usage,
+            effort=effort,
+            model=model,
+        )
+        body = _strip_code_fences(reply).strip()
         source = assemble_agent(body, spec)
         # Safety first, then reusability: there is no point telling the model
         # its prompt is too specific if the code will not even parse.
