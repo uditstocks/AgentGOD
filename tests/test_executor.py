@@ -6,9 +6,9 @@ import sys
 
 import pytest
 
-import executor
-from config import estimate_cost
-from executor import (
+from agentgod import executor
+from agentgod.config import estimate_cost
+from agentgod.executor import (
     AgentResult,
     execute_agent,
     execute_all,
@@ -16,7 +16,7 @@ from executor import (
     requirement_name,
     save_agent_file,
 )
-from planner import AgentSpec
+from agentgod.planner import AgentSpec
 
 PYTHON = sys.executable
 
@@ -266,7 +266,7 @@ def test_no_grade_leaves_the_environment_alone(tmp_path, monkeypatch):
 
 
 def test_environmental_failures_are_recognised():
-    from executor import is_environmental, is_transient
+    from agentgod.executor import is_environmental, is_transient
 
     assert is_environmental("timed out after 300s")
     assert is_environmental("ANTHROPIC_API_KEY is not set.")

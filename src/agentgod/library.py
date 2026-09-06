@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from config import AGENT_RUNTIME_VERSION, INVENTORY_DIR
+from .config import AGENT_RUNTIME_VERSION, INVENTORY_DIR
 
 LIBRARY_DIR = INVENTORY_DIR / "agents"
 INDEX_PATH = INVENTORY_DIR / "index.json"
@@ -161,7 +161,7 @@ def reusable(name: str) -> bool:
     if source is None:
         return True
 
-    from topicguard import is_reusable
+    from .topicguard import is_reusable
 
     return is_reusable(source, entry.built_for)
 
@@ -185,7 +185,7 @@ def audit() -> dict[str, list[str]]:
     Maps agent name to the problems found. An empty dict means the library is
     clean. Agents with no recorded task are skipped, not accused.
     """
-    from topicguard import check_topic_leakage
+    from .topicguard import check_topic_leakage
 
     found: dict[str, list[str]] = {}
     for entry in catalogue():

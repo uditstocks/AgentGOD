@@ -19,7 +19,7 @@ import re
 
 from pydantic import BaseModel, Field
 
-from config import Usage, complete_structured, model_for
+from .config import Usage, complete_structured, model_for
 
 # How many chars of an answer the judge is shown. A judge that reads a
 # 40 KB answer costs more than the run it is checking.

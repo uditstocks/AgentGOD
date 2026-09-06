@@ -24,9 +24,14 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import cli
+from . import cli
 
-PROJECT_DIR = Path(__file__).resolve().parent
+
+# Where user data lives (never site-packages). config decides; main obeys.
+def _data_dir():
+    from .config import DATA_DIR
+
+    return DATA_DIR
 MIN_PYTHON = (3, 10)
 QUIT_WORDS = frozenset({"quit", "exit", "q"})
 TASK_PROMPT = "What do you need done?\n> "
@@ -46,7 +51,7 @@ def _ui():
     """The session's renderer, created on first use so tests can intercept."""
     global _ACTIVE_UI
     if _ACTIVE_UI is None:
-        from ui import make_ui
+        from .ui import make_ui
 
         _ACTIVE_UI = make_ui()
     return _ACTIVE_UI
@@ -152,7 +157,7 @@ def _check_dependencies() -> bool:
         return False
 
     _ui().blank()
-    if subprocess.run(command, cwd=str(PROJECT_DIR)).returncode != 0:
+    if subprocess.run(command, cwd=str(_data_dir())).returncode != 0:
         _ui().error("\npip failed. Install them manually:\n  pip install -r requirements.txt")
         return False
 
@@ -173,6 +178,19 @@ def _looks_like_anthropic_key(value: str) -> bool:
     return value.startswith("sk-ant-") and len(value) >= 24
 
 
+def _clean_key(raw: str) -> str:
+    """A pasted key with every scrap of whitespace removed.
+
+    A key is one unbroken token, so a space, tab or newline inside it can
+    only be paste damage - and an embedded newline is the worst kind, because
+    it makes the HTTP header invalid and the request dies on this machine
+    without ever reaching the API. That surfaced as "could not reach the API
+    to verify the key", which reads as a network fault and is not one; the
+    same broken key then went on to kill the run at its first real call.
+    """
+    return "".join(raw.split())
+
+
 def _read_secret(message: str) -> str | None:
     """Read a credential without echoing it, where the terminal allows.
 
@@ -184,13 +202,14 @@ def _read_secret(message: str) -> str | None:
         import getpass
 
         try:
-            return getpass.getpass(message).strip()
+            return _clean_key(getpass.getpass(message))
         except (EOFError, KeyboardInterrupt):
             _ui().blank()
             return None
         except Exception:
             pass  # odd shells; fall through to the visible prompt
-    return ask(message)
+    typed = ask(message)
+    return None if typed is None else _clean_key(typed)
 
 
 def _probe_key(key: str) -> str:
@@ -213,8 +232,15 @@ def _probe_key(key: str) -> str:
 
 
 def _save_key(env_file: Path, key: str) -> None:
-    """Write the key back to .env so this only ever happens once."""
+    """Write the key back to .env so this only ever happens once.
+
+    The directory is created first. On a fresh install nothing has written
+    to the data directory yet, so it does not exist - and without this the
+    very first key a new user pastes was refused with ENOENT and thrown
+    away, leaving them to re-enter it on every single run.
+    """
     try:
+        env_file.parent.mkdir(parents=True, exist_ok=True)
         lines = []
         if env_file.exists():
             lines = [
@@ -224,7 +250,7 @@ def _save_key(env_file: Path, key: str) -> None:
             ]
         lines.append(f"ANTHROPIC_API_KEY={key}")
         env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        _ui().success(f"Saved to {env_file.name} (gitignored).\n")
+        _ui().success(f"Saved to {env_file}\n")
     except OSError as error:
         _ui().warn(f"Could not write .env ({error}); using the key for this session only.\n")
 
@@ -239,7 +265,7 @@ def _check_api_key() -> bool:
     """
     from dotenv import load_dotenv
 
-    env_file = PROJECT_DIR / ".env"
+    env_file = _data_dir() / ".env"
     load_dotenv(env_file)
 
     key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -257,8 +283,11 @@ def _check_api_key() -> bool:
     _ui().note("Get one at https://console.anthropic.com/settings/keys\n")
 
     if not _interactive():
-        _ui().note("Set it in .env, or as an environment variable:")
+        # An installed user has no reason to know the data directory
+        # exists, let alone where it is.
+        _ui().note("Set it as an environment variable:")
         _ui().note("  ANTHROPIC_API_KEY=sk-ant-...")
+        _ui().note(f"or put that line in {_data_dir() / '.env'}")
         return False
 
     for _ in range(3):
@@ -281,8 +310,11 @@ def _check_api_key() -> bool:
         if verdict == "rejected":
             _ui().warn("The API rejected that key - it may be revoked or mistyped. Try again.")
             continue
-        if verdict == "unreachable":
-            _ui().note("(could not reach the API to verify the key - keeping it anyway)")
+        # "unreachable" is deliberately silent now. The check exists to catch
+        # a wrong key while the user is still here to retype it; being offline
+        # says nothing about the key, and announcing it reads as a failure at
+        # the moment the product should feel like it is working. A key that
+        # really is wrong is explained by problems.py on its first use.
         _save_key(env_file, entered)
         os.environ["ANTHROPIC_API_KEY"] = entered
         return True
@@ -330,8 +362,8 @@ class Outcome:
 
 def _session_banner() -> None:
     """The startup screen: who this is, what it will spend, what it remembers."""
-    from config import MAX_AGENTS, MODEL, RUNS_DIR
-    from library import catalogue
+    from .config import MAX_AGENTS, MODEL, RUNS_DIR
+    from .library import catalogue
 
     try:
         run_count = sum(1 for _ in RUNS_DIR.glob("*.md")) if RUNS_DIR.is_dir() else 0
@@ -353,8 +385,9 @@ def _keep_policy_from_env() -> str:
 def _persist_keep_always() -> None:
     """Record 'always keep' in .env, so the question never comes back."""
     os.environ["AGENTGOD_KEEP"] = "always"
-    env_file = PROJECT_DIR / ".env"
+    env_file = _data_dir() / ".env"
     try:
+        env_file.parent.mkdir(parents=True, exist_ok=True)
         lines = []
         if env_file.exists():
             lines = [
@@ -379,7 +412,7 @@ def ask_keep(result, policy: str = "ask", interactive: bool | None = None) -> li
     """
     if not result.pending:
         return []
-    from library import remember
+    from .library import remember
 
     def store() -> list[str]:
         return [
@@ -448,14 +481,14 @@ def cleanup(agent_paths: list[Path]) -> None:
     """
     if not agent_paths:
         return
-    from inventory import delete_agents
+    from .inventory import delete_agents
 
     delete_agents(agent_paths)
 
 
 def archive(task: str, result) -> Path | None:
     """Write the run to runs/, never letting a broken archive lose the answer."""
-    from runlog import save_run
+    from .runlog import save_run
 
     try:
         return save_run(task, result)
@@ -471,8 +504,8 @@ def answer_directly(text: str) -> str | None:
     those agents, knowing nothing about AgentGod, described one that does not
     exist.
     """
-    import identity
-    from router import Intent, classify
+    from . import identity
+    from .router import Intent, classify
 
     intent = classify(text)
     if intent is Intent.GREETING:
@@ -486,7 +519,7 @@ def answer_directly(text: str) -> str | None:
     if intent is Intent.IDENTITY:
         return identity.describe_identity()
     if intent is Intent.HELP:
-        from commands import help_text
+        from .commands import help_text
 
         return help_text()
     return None
@@ -500,7 +533,7 @@ def prepare(task: str, conversation=None) -> tuple[str, list[str], str]:
     Both steps are announced by the caller: reading a file sends it to a model
     provider, and folding in context changes what the answer is about.
     """
-    from attachments import attach
+    from .attachments import attach
 
     attached = attach(task)
     labels = [item.label() for item in attached.files]
@@ -523,18 +556,18 @@ def clarify(task: str, conversation=None, allow_prompt: bool = True):
     An empty reply means "just get on with it", which is a perfectly good
     answer and is not asked about twice.
     """
-    from config import CLARIFY, Usage
+    from .config import CLARIFY, Usage
 
     usage = Usage()
     if not allow_prompt or not _interactive() or CLARIFY == "off":
         return task, usage
     if conversation is not None:
-        from conversation import is_follow_up
+        from .conversation import is_follow_up
 
         if is_follow_up(task):
             return task, usage
 
-    from judgment import clarifying_question
+    from .judgment import clarifying_question
 
     try:
         with _ui().status("sizing up the task..."):
@@ -568,7 +601,7 @@ def run_task(
     filled with what happened so callers with their own contract (--json,
     exit codes) do not have to re-derive it from the printed output.
     """
-    from orchestrator import handle_task
+    from .orchestrator import handle_task
 
     ui = _ui()
     outcome = outcome if outcome is not None else Outcome()
@@ -610,7 +643,7 @@ def run_task(
             try:
                 ui.run_succeeded(result, saved)
             except Exception:
-                from ui import PlainUI
+                from .ui import PlainUI
 
                 PlainUI().run_succeeded(result, saved)
         if conversation is not None:
@@ -625,7 +658,7 @@ def run_task(
         ui.run_cancelled()
         outcome.cancelled = True
     except Exception as error:  # one failed task must not end the session
-        from problems import explain
+        from .problems import explain
 
         try:
             problem = explain(error)
@@ -783,7 +816,7 @@ def _json_payload(task: str, outcome: Outcome) -> dict:
 
 def _run_command(verb: str, argument: str) -> int:
     """One free command - `agentgod library` - straight to the handler and out."""
-    from commands import Command, handle
+    from .commands import Command, handle
 
     _ui().reply(handle(Command(name=verb, argument=argument)))
     return cli.EXIT_OK
@@ -795,7 +828,7 @@ def _run_one_shot(invocation: cli.Invocation) -> int:
 
     # A slash command as the one-shot task is a question about the session,
     # answered free - never a billed pipeline run.
-    from commands import PASTE, QUIT, handle, parse
+    from .commands import PASTE, QUIT, handle, parse
 
     command = parse(task)
     if command is not None:
@@ -825,9 +858,9 @@ def _run_one_shot(invocation: cli.Invocation) -> int:
 
 def _session(invocation: cli.Invocation) -> int:
     """The interactive loop: the product most people meet."""
-    from commands import PASTE, QUIT, handle, parse
-    from conversation import Conversation
-    from router import Intent, classify
+    from .commands import PASTE, QUIT, handle, parse
+    from .conversation import Conversation
+    from .router import Intent, classify
 
     _session_banner()
     conversation = Conversation()

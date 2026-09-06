@@ -10,7 +10,7 @@ import io
 
 import pytest
 
-import cli
+from agentgod import cli
 
 
 def parse(*argv: str) -> cli.Invocation:

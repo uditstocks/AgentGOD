@@ -30,3 +30,5 @@ TODO.md
 # GTM / prompt scratch, not part of the product
 GTM_POSITIONING.md
 presentation
+build/
+dist/

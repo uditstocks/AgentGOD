@@ -8,34 +8,51 @@ dynamic = ["version"]
 description = "One permanent AI agent that builds, runs and retires other agents per task."
 readme = "README.md"
 requires-python = ">=3.10"
+authors = [{ name = "Udit Sharma" }]
+keywords = ["ai", "agents", "cli", "anthropic", "claude", "multi-agent"]
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Utilities",
+]
 dependencies = [
     "anthropic>=1.0,<2.0",
     "pydantic>=2.7,<3.0",
     "python-dotenv>=1.0,<2.0",
+    # The live board is the product's face, so it ships by default. The code
+    # still degrades to plain text if it is ever missing.
+    "rich>=13.7,<15",
 ]
 
-[project.optional-dependencies]
-# The full terminal experience. Without it every run still works in plain text.
-rich = ["rich>=13.7,<15"]
+[project.urls]
+Homepage = "https://github.com/uditstocks/AgentGOD"
+Issues = "https://github.com/uditstocks/AgentGOD/issues"
 
 [project.scripts]
-agentgod = "main:cli_main"
+# Both spellings. A case-insensitive filesystem (Windows, macOS) resolves one
+# from the other on its own; Linux does not, so it is named twice.
+agentgod = "agentgod.main:cli_main"
+AgentGOD = "agentgod.main:cli_main"
 
-[tool.setuptools]
-# The project is deliberately flat: one file, one responsibility.
-py-modules = [
-    "attachments", "cli", "codeguard", "commands", "config", "conversation",
-    "council", "events", "executor", "generator", "identity", "inventory",
-    "judgment", "library", "main", "merger", "orchestrator", "planner",
-    "problems", "richui", "router", "runlog", "taskgraph", "topicguard", "ui",
-]
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.setuptools.dynamic]
-# --version, the installed dist, and the docs all read one number: cli.py's.
-version = {attr = "cli.__version__"}
+# --version, the installed dist and the docs all read one number: cli.py's.
+version = { attr = "agentgod.cli.__version__" }
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
 
@@ -43,7 +60,7 @@ addopts = "-q"
 # The machine-written agents in inventory/ and generated_agents/ follow the
 # trusted runtime's own conventions; type-checking the main codebase must not
 # depend on what the machine last wrote there.
-exclude = ["**/__pycache__", ".venv", ".agent_venv", "inventory", "generated_agents", "runs"]
+exclude = ["**/__pycache__", ".venv", ".agent_venv", "inventory", "generated_agents", "runs", "build", "dist"]
 
 [tool.ruff]
 line-length = 100

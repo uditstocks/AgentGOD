@@ -190,6 +190,36 @@ FILESYSTEM_ATTRIBUTES = frozenset({"remove", "rename", "replace", "truncate"})
 # Roots that make one of the names above a filesystem call.
 FILESYSTEM_RECEIVERS = frozenset({"os", "shutil", "pathlib", "Path", "path", "io"})
 
+# `os.system(...)` is refused as an attribute call, but `from os import system`
+# reaches the same function under a bare name - and a bare call is not an
+# attribute, so it sailed straight through and really did shell out.
+#
+# Which import is dangerous depends on where it came from, though. `system`
+# and `rmtree` mean one thing wherever they are found; `remove` deletes a file
+# on `os` and nothing at all elsewhere; and `compile` is the builtin that
+# turns a string into code only when it IS the builtin - `from re import
+# compile` builds a regex and is entirely ordinary. Refusing the word rather
+# than the meaning turned that idiom into a rejected agent.
+ALWAYS_BANNED_IMPORTS = BANNED_ATTRIBUTES
+
+# The interpreter's own internals. Nothing a generated agent legitimately does
+# needs them, and every one of them is a way back to the builtins that
+# BANNED_CALLS just refused - `getattr(__builtins__, "eval")` being the
+# shortest. Refused by name, wherever they appear.
+REFLECTIVE_NAMES = frozenset(
+    {
+        "__builtins__",
+        "__globals__",
+        "__subclasses__",
+        "__bases__",
+        "__mro__",
+        "__code__",
+        "__loader__",
+        "__spec__",
+        "__getattribute__",
+    }
+)
+
 # open() modes that write.
 _WRITE_MODES = frozenset("wax+")
 
@@ -253,6 +283,27 @@ class _Inspector(ast.NodeVisitor):
             self.problems.append(f"line {node.lineno}: relative imports are not allowed")
         elif node.module and _root_module(node.module) not in self.allowed_modules:
             self.problems.append(self._refuse(node.lineno, node.module))
+        root = _root_module(node.module or "")
+        for alias in node.names:
+            dangerous = (
+                alias.name in ALWAYS_BANNED_IMPORTS
+                or (alias.name in FILESYSTEM_ATTRIBUTES and root in FILESYSTEM_RECEIVERS)
+                or (alias.name in BANNED_CALLS and root == "builtins")
+            )
+            if dangerous:
+                self.problems.append(
+                    f"line {node.lineno}: importing {alias.name!r} from {root} is not allowed"
+                )
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if node.id in REFLECTIVE_NAMES:
+            self.problems.append(f"line {node.lineno}: {node.id} is not allowed")
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if node.attr in REFLECTIVE_NAMES:
+            self.problems.append(f"line {node.lineno}: .{node.attr} is not allowed")
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:

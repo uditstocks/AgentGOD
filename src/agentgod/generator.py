@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import re
 
-from codeguard import ALLOWED_PACKAGES, check_agent_source
-from config import (
+from .codeguard import ALLOWED_PACKAGES, ALLOWED_STDLIB, check_agent_source
+from .config import (
     ANTHROPIC_API_URL,
     ANTHROPIC_VERSION,
     CODEGEN_ATTEMPTS,
@@ -28,9 +28,9 @@ from config import (
     cached_system,
     complete,
 )
-from executor import requirement_name
-from planner import AgentSpec
-from topicguard import check_task_is_used, check_topic_leakage, task_subjects
+from .executor import requirement_name
+from .planner import AgentSpec
+from .topicguard import check_task_is_used, check_topic_leakage, task_subjects
 
 # Placeholders filled in by _render_header(). Deliberately not str.format():
 # the header contains literal braces that .format() would choke on.
@@ -521,6 +521,17 @@ def assemble_agent(body: str, spec: AgentSpec | None = None) -> str:
     )
 
 
+def importable_for(spec: AgentSpec) -> frozenset[str]:
+    """The third-party import names actually installed for THIS agent.
+
+    The vetted catalogue says what MAY be installed; the plan says what WAS,
+    for this one agent. Only the second is on the machine when the agent
+    runs, so it is the set both the prompt and the guard must use.
+    """
+    names = (requirement_name(dependency) for dependency in spec.dependencies)
+    return frozenset(ALLOWED_PACKAGES[name] for name in names if name in ALLOWED_PACKAGES)
+
+
 def _package_rule(spec: AgentSpec) -> str:
     """What this agent may import beyond the standard library, if anything.
 
@@ -528,8 +539,7 @@ def _package_rule(spec: AgentSpec) -> str:
     listing the whole vetted catalogue here would invite an import of
     something that is not on the machine.
     """
-    names = (requirement_name(dependency) for dependency in spec.dependencies)
-    importable = sorted({ALLOWED_PACKAGES[name] for name in names if name in ALLOWED_PACKAGES})
+    importable = sorted(importable_for(spec))
     if not importable:
         return "- No third-party package is installed for this agent. Do not import one."
     return (
@@ -611,7 +621,7 @@ def generate_agent_code(
         # no point telling the model its prompt is too specific if the code
         # will not parse, or never looks at the task in the first place.
         problems = (
-            check_agent_source(source)
+            check_agent_source(source, ALLOWED_STDLIB | importable_for(spec))
             or check_task_is_used(source)
             or check_topic_leakage(source, task)
         )

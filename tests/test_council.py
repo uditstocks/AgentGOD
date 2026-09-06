@@ -6,8 +6,8 @@ the critic decides - so none of it needs an API key.
 
 from __future__ import annotations
 
-import council
-from council import Challenge, deliberate, should_convene
+from agentgod import council
+from agentgod.council import Challenge, deliberate, should_convene
 
 
 def fake_challenge(monkeypatch, reply: Challenge):

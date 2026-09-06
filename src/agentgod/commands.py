@@ -23,6 +23,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "audit": ("", "check the library for agents that hardcoded their first task"),
     "history": ("[n]", "the recent archived runs, or reopen run n"),
     "last": ("", "show the most recent answer again"),
+    "where": ("", "where your answers, agents and key are kept on disk"),
     "clear": ("", "forget the conversation so far"),
     "paste": ("", "start a multi-line task; end it with a line containing only ."),
     "quit": ("", "leave"),
@@ -82,7 +83,7 @@ def help_text() -> str:
 
 
 def _library_text() -> str:
-    from library import catalogue
+    from .library import catalogue
 
     entries = catalogue()
     if not entries:
@@ -115,8 +116,8 @@ def _record(entry) -> str:
 
 def _stats_text() -> str:
     """The lifetime dashboard, entirely from disk - nothing here costs a call."""
-    from config import RUNS_DIR
-    from library import catalogue
+    from .config import RUNS_DIR
+    from .library import catalogue
 
     entries = catalogue()
     try:
@@ -153,7 +154,7 @@ def _stats_text() -> str:
 
 
 def _forget_text(name: str) -> str:
-    from library import forget
+    from .library import forget
 
     if not name:
         return f"Which one? `{PREFIX}forget <agent>` - see `{PREFIX}library`."
@@ -163,7 +164,7 @@ def _forget_text(name: str) -> str:
 
 
 def _audit_text() -> str:
-    from library import audit, catalogue
+    from .library import audit, catalogue
 
     checked = [entry for entry in catalogue() if entry.built_for]
     unchecked = [entry.name for entry in catalogue() if not entry.built_for]
@@ -197,7 +198,7 @@ def _audit_text() -> str:
 
 def _archived_runs() -> list:
     """Every archived run, most recent first."""
-    from config import RUNS_DIR
+    from .config import RUNS_DIR
 
     try:
         return sorted(RUNS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -253,6 +254,42 @@ def _history_text(argument: str = "", limit: int = 10) -> str:
     return "\n".join(lines)
 
 
+def _where_text() -> str:
+    """Where everything this program keeps actually lives.
+
+    The answer to a task is archived, but an installed AgentGod writes to a
+    platform directory nobody has reason to guess at - so "it was saved" is
+    only useful if the user is told where, and how to get it back.
+    """
+    from .config import DATA_DIR, ENV_FILE, INVENTORY_DIR, RUNS_DIR
+
+    archived = len(_archived_runs())
+    kept = 0
+    try:
+        from .library import catalogue
+
+        kept = len(catalogue())
+    except Exception:
+        pass
+
+    return "\n".join(
+        [
+            "**Everything AgentGod keeps lives here:**",
+            "",
+            f"    {DATA_DIR}",
+            "",
+            f"    answers    {RUNS_DIR}",
+            f"               {archived} archived · `{PREFIX}last` reprints the newest,"
+            f" `{PREFIX}history` lists them",
+            f"    agents     {INVENTORY_DIR}",
+            f"               {kept} kept · `{PREFIX}library` lists them",
+            f"    your key   {ENV_FILE}",
+            "",
+            "Set `AGENTGOD_HOME` to keep all of it somewhere else.",
+        ]
+    )
+
+
 def _last_text() -> str:
     """The most recent answer, shown again without paying for it twice."""
     files = _archived_runs()
@@ -273,6 +310,8 @@ def handle(command: Command, conversation=None) -> str:
         return _forget_text(command.argument)
     if command.name == "audit":
         return _audit_text()
+    if command.name in ("where", "home", "path"):
+        return _where_text()
     if command.name in ("history", "runs"):
         return _history_text(command.argument)
     if command.name in ("last", "again"):

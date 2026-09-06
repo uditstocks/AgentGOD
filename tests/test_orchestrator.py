@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-import orchestrator
-from events import TaskEvents
-from executor import AgentResult, DependencyReport
-from judgment import Verdict
-from planner import AgentSpec, Plan, canonical_role
+from agentgod import orchestrator
+from agentgod.events import TaskEvents
+from agentgod.executor import AgentResult, DependencyReport
+from agentgod.judgment import Verdict
+from agentgod.planner import AgentSpec, Plan, canonical_role
 
 SOURCE = "def run(task, previous_outputs):\n    return 'ok'\n"
 

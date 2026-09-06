@@ -15,8 +15,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from executor import AgentResult, DependencyReport
-    from planner import Plan
+    from .executor import AgentResult, DependencyReport
+    from .planner import Plan
 
 
 class TaskEvents:

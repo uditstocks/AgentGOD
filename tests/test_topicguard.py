@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from topicguard import (
+from agentgod.topicguard import (
     check_task_is_used,
     check_topic_leakage,
     is_reusable,
@@ -288,7 +288,7 @@ def test_a_task_with_no_figures_is_unaffected():
 
 
 def test_a_two_letter_acronym_is_a_subject():
-    from topicguard import task_subjects
+    from agentgod.topicguard import task_subjects
 
     assert "qr" in task_subjects("write a python script to convert text into qr code")
     assert "ai" in task_subjects("explain how AI changed hiring")
@@ -298,7 +298,7 @@ def test_a_two_letter_acronym_is_a_subject():
 
 def test_short_craft_words_are_still_noise():
     """Lowering the length rule must not start banning ordinary words."""
-    from topicguard import task_subjects
+    from agentgod.topicguard import task_subjects
 
     subjects = task_subjects("In one line, explain how you would do this")
     for noise in ("one", "how", "you", "do", "in", "this"):
@@ -306,7 +306,7 @@ def test_short_craft_words_are_still_noise():
 
 
 def test_an_agent_that_hardcoded_a_short_acronym_is_caught():
-    from topicguard import check_topic_leakage, is_reusable
+    from agentgod.topicguard import check_topic_leakage, is_reusable
 
     source = (
         "def run(task, previous_outputs):\n"
@@ -320,7 +320,7 @@ def test_an_agent_that_hardcoded_a_short_acronym_is_caught():
 
 def test_a_genuinely_topic_agnostic_agent_still_passes():
     """The guard must not start rejecting every agent it is shown."""
-    from topicguard import is_reusable
+    from agentgod.topicguard import is_reusable
 
     source = (
         "def run(task, previous_outputs):\n"

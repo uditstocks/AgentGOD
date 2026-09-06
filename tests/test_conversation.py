@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from conversation import MAX_CONTEXT_CHARS, Conversation, is_follow_up
+from agentgod.conversation import MAX_CONTEXT_CHARS, Conversation, is_follow_up
 
 
 @pytest.mark.parametrize(

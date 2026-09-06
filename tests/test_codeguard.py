@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from codeguard import check_agent_source
+from agentgod.codeguard import check_agent_source
 
 VALID = "import json\n\n\ndef run(task, previous_outputs):\n    return 'ok'\n"
 
@@ -163,8 +163,7 @@ def test_names_that_are_only_ever_filesystem_calls_stay_banned_outright(line):
 
 def test_the_installer_and_the_import_check_share_one_list():
     """A package that installs but cannot be imported fails after the install."""
-    import codeguard
-    import executor
+    from agentgod import codeguard, executor
 
     assert executor.ALLOWED_PACKAGES is codeguard.ALLOWED_PACKAGES
     assert set(codeguard.ALLOWED_PACKAGES.values()) == set(codeguard.ALLOWED_THIRD_PARTY)
@@ -188,7 +187,7 @@ def test_a_package_nobody_vetted_is_still_refused():
 
 
 def test_every_vetted_package_is_importable_by_its_import_name():
-    from codeguard import ALLOWED_PACKAGES
+    from agentgod.codeguard import ALLOWED_PACKAGES
 
     for pip_name, import_name in ALLOWED_PACKAGES.items():
         assert check_agent_source(f"import {import_name}\n{VALID}") == [], pip_name
@@ -199,3 +198,88 @@ def test_the_refusal_says_why_without_reciting_the_allowlist():
     problem = check_agent_source(f"import subprocess\n{VALID}")[0]
     assert "shells out" in problem
     assert len(problem) < 200
+
+
+# --- a dangerous name is dangerous however it was reached ----------------------
+#
+# `os.system(...)` was refused as an attribute call, but `from os import system`
+# reaches the same function under a bare name - and a bare call is not an
+# attribute, so it passed the guard and really did shell out. Confirmed by
+# executing the assembled agent: the canary file was written.
+
+
+@pytest.mark.parametrize(
+    ("source", "label"),
+    [
+        ("from os import system\ndef run(t, p):\n    system('dir')\n    return 'x'\n", "os.system"),
+        ("from os import system as s\ndef run(t, p):\n    s('dir')\n    return 'x'\n", "aliased"),
+        ("from shutil import rmtree\ndef run(t, p):\n    rmtree('/')\n    return 'x'\n", "rmtree"),
+        ("from os import remove\ndef run(t, p):\n    remove('a')\n    return 'x'\n", "remove"),
+        ("from os import popen\ndef run(t, p):\n    popen('dir')\n    return 'x'\n", "popen"),
+        ("from os import kill\ndef run(t, p):\n    kill(1, 9)\n    return 'x'\n", "kill"),
+    ],
+)
+def test_a_banned_name_cannot_be_smuggled_in_by_from_import(source, label):
+    assert check_agent_source(source) != []
+
+
+@pytest.mark.parametrize(
+    ("source", "label"),
+    [
+        ("def run(t, p):\n    getattr(__builtins__, 'eval')('1')\n    return 'x'\n", "builtins"),
+        ("def run(t, p):\n    return str(type(1).__subclasses__())\n", "__subclasses__"),
+        ("def run(t, p):\n    return str(run.__globals__)\n", "__globals__"),
+        ("def run(t, p):\n    return str(run.__code__)\n", "__code__"),
+    ],
+)
+def test_reflective_routes_back_to_the_builtins_are_refused(source, label):
+    assert check_agent_source(source) != []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from pathlib import Path\ndef run(t, p):\n    return str(Path('.'))\n",
+        "from typing import Dict\ndef run(t, p):\n    return 'x'\n",
+        "from collections import Counter\ndef run(t, p):\n    return str(Counter(t))\n",
+        "from datetime import datetime\ndef run(t, p):\n    return 'x'\n",
+        "from json import dumps\ndef run(t, p):\n    return dumps({'a': 1})\n",
+    ],
+)
+def test_ordinary_from_imports_are_still_allowed(source):
+    """A stricter rule that refuses honest code costs more than it saves."""
+    assert check_agent_source(source) == []
+
+
+# --- the module decides, not the word ------------------------------------------
+#
+# Refusing the bare word `compile` everywhere turned `from re import compile` -
+# an ordinary idiom that builds a regex - into a rejected agent, and a real
+# four-agent task failed after three regeneration attempts because of it.
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from re import compile\ndef run(t, p):\n    return 'x'\n",
+        "from dataclasses import replace\ndef run(t, p):\n    return 'x'\n",
+        "from os.path import join\ndef run(t, p):\n    return join('a', 'b')\n",
+        "from string import Template\ndef run(t, p):\n    return 'x'\n",
+        "from itertools import chain\ndef run(t, p):\n    return 'x'\n",
+    ],
+)
+def test_a_harmless_name_from_a_harmless_module_is_allowed(source):
+    assert check_agent_source(source) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from builtins import eval\ndef run(t, p):\n    return eval('1')\n",
+        "from builtins import exec\ndef run(t, p):\n    return 'x'\n",
+        "from os import remove\ndef run(t, p):\n    remove('a')\n    return 'x'\n",
+        "from shutil import rmtree\ndef run(t, p):\n    return 'x'\n",
+    ],
+)
+def test_the_same_word_from_a_dangerous_module_is_refused(source):
+    assert check_agent_source(source) != []
