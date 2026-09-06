@@ -100,7 +100,7 @@ def test_render_survives_a_result_without_a_plan():
 
 
 def test_render_handles_non_ascii():
-    text = render("Résumé — 2026 ✓", _Result(response="Café ✓ 日本語"))
+    text = render("Résumé - 2026 ✓", _Result(response="Café ✓ 日本語"))
     assert "Café ✓ 日本語" in text
 
 

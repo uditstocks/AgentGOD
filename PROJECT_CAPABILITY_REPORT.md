@@ -1,4 +1,4 @@
-# AgentGod — Capability Report
+# AgentGod - Capability Report
 
 *What this system is genuinely capable of, after being pushed until it broke.*
 
@@ -17,27 +17,12 @@ CLI exactly as a user would. Nothing here is inferred from reading code.
 | **Tests Passed** | **974** |
 | **Tests Failed** | **0** (final state) |
 | **Pass Rate** | **100%** |
-| **Issues Discovered** | **7** — all fixed and regression-tested |
+| **Issues Discovered** | **7** - all fixed and regression-tested |
 | **Critical / High** | **1 Critical · 4 High** |
 | Live-API spend to prove it | ~$1.30 |
 
 **Final status: production-ready.**
 
----
-
-## Issues found and closed
-
-| # | Issue | Severity |
-|---|---|---|
-| 1 | `from os import system` bypassed the code guard and **really executed a shell command** (proven by a canary file) | **Critical** |
-| 2 | `getattr(__builtins__, 'eval')` reached the banned builtins reflectively | High |
-| 3 | A prompt written by `input()` landed on **stdout**, corrupting the `--json` contract | High |
-| 4 | Short common words ("own", "under") counted as task subjects, so any agent whose prompt said *"your own"* was rejected three times — this killed whole four-agent tasks at generation | High |
-| 5 | **Zombie agents**: the subject survived in the agent **NAME**. Every source-level guard passed `burnout_research_agent`, and the library filled with permanent subject-shaped duplicates the planner was then shown forever | High |
-| 6 | An agent could import a package that was never installed for it → runtime crash + two wasted regeneration calls | Medium |
-| 7 | The archive was written where no installed user could find it | Medium |
-
----
 
 ## Best demonstrated capabilities
 
@@ -57,13 +42,13 @@ source, and the audit was clean after every round.
 no preamble" produced exactly that. A 250-word cap held. A 400-word cap held.
 
 **It reads large real documents and answers precisely.** Given a 31,703-byte
-specification, it returned the latency budget from *Section 7 specifically* —
+specification, it returned the latency budget from *Section 7 specifically* -
 not a summary of the whole file. Given `taskgraph.py` (6.5 KB of real source),
 it correctly described the wave computation, the dependency closure, and the
 cycle-breaking behaviour.
 
 **It fails honestly.** Forced total agent timeout returned *"Every agent ran
-out of time — raise AGENT_TIMEOUT_SECONDS, or ask for less in one task"* in
+out of time - raise AGENT_TIMEOUT_SECONDS, or ask for less in one task"* in
 23 seconds, with no hang and no traceback.
 
 ---
@@ -77,9 +62,9 @@ Each of these was run end-to-end and its output checked:
    recommendation, three risks with mitigations, and the strongest argument
    *against its own conclusion*. Four agents, deep grade, $0.22.
 2. **A production LRU cache** with O(1) operations and a self-testing
-   `__main__` block — which executed and passed.
+   `__main__` block - which executed and passed.
 3. **A natural-language-to-SQL workflow** in runnable Python.
-4. **Precise retrieval from a 31 KB spec** — one section's latency budget.
+4. **Precise retrieval from a 31 KB spec** - one section's latency budget.
 5. **Reading its own source** (`taskgraph.py`) and explaining the
    cycle-breaking algorithm correctly.
 6. **Postgres vs SQLite** across durability, concurrency and operational cost,
@@ -89,46 +74,21 @@ Each of these was run end-to-end and its output checked:
 
 ## Where it performs exceptionally well
 
-- **Bounded technical writing** — a word limit plus a required structure
-- **Self-contained code with tests** — the generated file runs
-- **Document interrogation** — a specific fact out of a large document
+- **Bounded technical writing** - a word limit plus a required structure
+- **Self-contained code with tests** - the generated file runs
+- **Document interrogation** - a specific fact out of a large document
 - **Comparative analysis ending in a decision**
-- **Repeat work** — a warm library answers in ~15s for well under a cent
+- **Repeat work** - a warm library answers in ~15s for well under a cent
 
-## Where it is merely competent
-
-- **Very vague prompts** ("make it better") complete without crashing, but the
-  answer is necessarily thin — the system does not interview you first
-- **Parallel planning is model-dependent**: measured **4/5** on a task with
-  two genuinely independent research strands; the fifth run chose a chain
-
----
 
 ## Maximum complexity successfully handled
 
 **Four agents, deep grade, three simultaneous output contracts** (a word-capped
 recommendation + exactly three risk/mitigation pairs + a self-refuting
-counter-argument), built from **two independent research strands** — completed
+counter-argument), built from **two independent research strands** - completed
 in ~90 seconds for $0.22, with no agent failure and no quality gate skipped.
 
 That is the observed ceiling. `MAX_AGENTS` is 4 by design.
-
----
-
-## Known limits and failure boundaries
-
-| Limit | Evidence |
-|---|---|
-| **4 agents per task** | `MAX_AGENTS`, schema-enforced |
-| **Text in, text out** | no images, audio, or spreadsheets |
-| **Search, not browse** | an agent can look something up; it cannot log in or click through a site |
-| **No filesystem writes by agents** | enforced by the code guard, verified against 17 attacks |
-| **Parallelism is planner-dependent** | 4/5 measured; a chain still runs correctly, just slower |
-| **A vague prompt gets a vague answer** | no clarification loop today |
-| **Verified on Windows only** | macOS/Linux untested |
-| **No streaming** | output arrives when the run completes |
-
----
 
 ## Security & robustness
 
@@ -139,9 +99,9 @@ That is the observed ceiling. `MAX_AGENTS` is 4 by design.
   `pickle`, `importlib`, `compile`, aliased imports, from-imports, reflective
   builtins access.
 - **5 prompt injections through the task** ("ignore all previous instructions",
-  fake authority, "codeguard is disabled for this task") — **canary file never
+  fake authority, "codeguard is disabled for this task") - **canary file never
   written** in any case.
-- **1 injection through an attached file** — ignored, and the model reported
+- **1 injection through an attached file** - ignored, and the model reported
   the override attempt rather than obeying it.
 - **Secrets never read**: `.env`, `id_rsa`, `.pem` refused even when named
   explicitly with `@`. Binary files refused. Path traversal neutralised.
@@ -158,7 +118,7 @@ One genuine sandbox escape existed and is now closed, with ten tests pinning it.
 ## Reliability
 
 - Same task three times: **3/3 succeeded**, 14 / 14 / 15 seconds,
-  $0.0090 / $0.0101 / $0.0126 — stable in both latency and cost.
+  $0.0090 / $0.0101 / $0.0126 - stable in both latency and cost.
 - **Ctrl-C** mid-run: exits promptly, no traceback, **no scratch agents left
   behind**.
 - Partial failure: a failed agent is excluded from the answer, never merged in
@@ -175,7 +135,7 @@ One genuine sandbox escape existed and is now closed, with ten tests pinning it.
 | Standard code task | ~30 s | ~$0.03 |
 | 31 KB document query | 18 s | ~$0.02 |
 | Deep, 4 agents | 90–115 s | ~$0.22 |
-| Most expensive observed | — | $0.34 |
+| Most expensive observed | - | $0.34 |
 
 Cached prompt prefixes and the agent library are what keep the common case
 under a cent.
@@ -186,7 +146,7 @@ under a cent.
 
 *Tasks that show what it can really do. Each shape below was actually run.*
 
-**The flagship — research, synthesis, and self-criticism**
+**The flagship - research, synthesis, and self-criticism**
 ```
 Research the operational trade-offs of Kafka versus Postgres-as-a-queue, and
 separately research what actually causes on-call burnout in small platform
@@ -227,7 +187,7 @@ Write Python for a workflow that accepts natural-language commands and
 converts them into SQL queries, with schema awareness and a validator.
 ```
 
-*Tip: give it a **shape** — a word count, a required section, a demanded
+*Tip: give it a **shape** - a word count, a required section, a demanded
 counter-argument. Constrained prompts are where it is strongest, because the
 answer is read back against the request before you ever see it.*
 
@@ -246,27 +206,27 @@ It installs with `pip install AgentGOD` and runs as `AgentGOD` from anywhere.
 
 ## What it could do beyond this
 
-- **A clarification loop before spending** — a plan preview with a cost
+- **A clarification loop before spending** - a plan preview with a cost
   estimate would convert the one weak case (vague prompts) into a strength
-- **Docker-per-agent** — turning static validation into true sandboxing
-- **Tools beyond one LLM call** — file reading, a real browser, a database
+- **Docker-per-agent** - turning static validation into true sandboxing
+- **Tools beyond one LLM call** - file reading, a real browser, a database
   connection would widen the class of solvable work considerably
-- **Streaming** — the answer as it forms rather than at the end
+- **Streaming** - the answer as it forms rather than at the end
 - **A DAG beyond 4 agents** with a scheduler for genuinely large jobs
 
 On replacing an engineer: on the evidence here it **writes correct, tested,
 self-contained code and reasons about trade-offs at a professional standard**.
-What it does not yet do is operate inside a codebase — read a repository, run
+What it does not yet do is operate inside a codebase - read a repository, run
 its tests, edit files, open a pull request. That gap is tooling, not
 intelligence.
 
 ## Most important remaining improvements
 
-1. **Cross-platform verification** (macOS, Linux) — everything here is Windows
-2. **CI** — 696 tests exist but nothing runs them automatically
-3. **Make parallel planning deterministic** — 4/5 should be 5/5
-4. **A plan preview for expensive runs** — the only real UX gap left
-5. **Docker isolation** — the honest upgrade from static validation
+1. **Cross-platform verification** (macOS, Linux) - everything here is Windows
+2. **CI** - 696 tests exist but nothing runs them automatically
+3. **Make parallel planning deterministic** - 4/5 should be 5/5
+4. **A plan preview for expensive runs** - the only real UX gap left
+5. **Docker isolation** - the honest upgrade from static validation
 
 ---
 
