@@ -470,3 +470,56 @@ def test_the_forbidden_word_list_names_acronyms_to_the_generator():
     )
     assert "'qr'" in rendered
     assert "FORBIDDEN WORDS" in rendered
+
+
+# --- the guard checks what THIS agent has, not what the catalogue allows -------
+
+
+def test_a_package_this_agent_never_got_is_refused():
+    """The catalogue says what MAY be installed; the plan says what WAS.
+
+    Only the second is on the machine when the agent runs. Checking against
+    the catalogue let `import requests` through for an agent that declared no
+    dependencies - so the crash arrived at runtime, after execution, and cost
+    two regeneration calls to discover what the guard could have said at once.
+    """
+    from agentgod.codeguard import ALLOWED_STDLIB, check_agent_source
+
+    source = generator.assemble_agent(
+        "import requests\ndef run(task, previous_outputs):\n    return str(requests)\n"
+    )
+    bare = AgentSpec(name="code_agent", role="r", instructions="i")
+    assert check_agent_source(source, ALLOWED_STDLIB | generator.importable_for(bare)) != []
+
+
+def test_a_package_the_plan_declared_is_allowed():
+    from agentgod.codeguard import ALLOWED_STDLIB, check_agent_source
+
+    source = generator.assemble_agent(
+        "import requests\ndef run(task, previous_outputs):\n    return str(requests)\n"
+    )
+    spec = AgentSpec(name="code_agent", role="r", instructions="i", dependencies=["requests"])
+    assert check_agent_source(source, ALLOWED_STDLIB | generator.importable_for(spec)) == []
+
+
+def test_the_standard_library_is_never_narrowed_away():
+    from agentgod.codeguard import ALLOWED_STDLIB, check_agent_source
+
+    source = generator.assemble_agent(
+        "import csv\ndef run(task, previous_outputs):\n    return str(csv)\n"
+    )
+    bare = AgentSpec(name="code_agent", role="r", instructions="i")
+    assert check_agent_source(source, ALLOWED_STDLIB | generator.importable_for(bare)) == []
+
+
+def test_the_prompt_and_the_guard_read_the_same_set():
+    """Two sources of truth is how the prompt and the guard drift apart."""
+    spec = AgentSpec(
+        name="chart_agent", role="r", instructions="i", dependencies=["pillow", "leftpad"]
+    )
+    importable = generator.importable_for(spec)
+    assert "PIL" in importable          # vetted, so installed
+    assert "leftpad" not in importable  # refused, so never on the machine
+    rule = generator._package_rule(spec)
+    for name in importable:
+        assert name in rule

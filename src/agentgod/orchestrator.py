@@ -59,7 +59,14 @@ from .library import (
     up_to_date,
 )
 from .merger import as_markdown, merge_outputs
-from .planner import AgentSpec, Plan, canonical_role, plan_agents, scrub_capabilities
+from .planner import (
+    AgentSpec,
+    Plan,
+    canonical_role,
+    neutralise_names,
+    plan_agents,
+    scrub_capabilities,
+)
 from .taskgraph import dependency_closure, waves
 
 PHASES = (
@@ -387,9 +394,14 @@ def handle_task(
 
     events.phase_started(1, len(PHASES), PHASES[0])
     plan: Plan = plan_agents(task, usage=usage)
-    # The generator is shown each agent's capability and nothing else, so this
-    # is the last point at which today's subject could still reach tomorrow's
-    # agent. A capability that names it is replaced outright, not trusted.
+    # Two ways today's subject can outlive today, both closed here, before a
+    # single agent is written. The NAME is the library's permanent key: an
+    # agent called `burnout_research_agent` passes every source-level guard
+    # and then pollutes the catalogue for good.
+    for old_name, new_name in neutralise_names(plan, subject):
+        events.agent_retired(old_name, f"its name held this task's subject; built as {new_name}")
+    # The CAPABILITY is the only text the generator is shown, so it is the
+    # last point at which the subject could reach the generated code.
     for name in scrub_capabilities(plan, subject):
         events.agent_retired(name, "its brief named this task, so a neutral one was used")
     events.plan_ready(plan)

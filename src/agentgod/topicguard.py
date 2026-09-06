@@ -73,6 +73,9 @@ CRAFT_WORDS = frozenset(_CRAFT_VOCABULARY.split())
 _CONNECTIVE_VOCABULARY = """
     a an the and or of in into to for with on at by as from is are was were be
     that this it its their there then than so not no such your my our we you i
+    under over within without between through during before after above below
+    against about across among around toward towards upon per via along beyond
+    versus each both either neither own same other another own
 """
 
 CONNECTIVES = frozenset(_CONNECTIVE_VOCABULARY.split())
@@ -94,6 +97,9 @@ MIN_SUBJECT_LENGTH = 2
 MAX_ECHOED_PHRASES = 1
 
 _WORDS = re.compile(r"[A-Za-z][A-Za-z'-]*")
+
+# Acronyms that carry a digit ("3D", "S3", "v2") are not letters-only.
+_MIXED = re.compile(r"[A-Za-z0-9]{2,4}")
 _NUMBERS = re.compile(r"\d+")
 
 
@@ -112,19 +118,70 @@ def _numbers(text: str) -> set[str]:
     return set(_NUMBERS.findall(text))
 
 
-def subject_words(words: list[str]) -> set[str]:
+# An acronym is written in capitals ("QR", "SQL", "AI") or carries a digit
+# ("3D", "S3", "v2"). A merely capitalised word is not one - "In" at the start
+# of a sentence is still the preposition, and admitting it made "in" a subject
+# that every agent was then forbidden to write.
+_ACRONYM = re.compile(r"^(?:[A-Z0-9]{2,5}|[A-Za-z]*[0-9][A-Za-z0-9]*)$")
+
+# From this length up, a word is judged on the vocabularies alone.
+LONG_ENOUGH_TO_JUDGE = 4
+
+
+def acronyms(text: str) -> set[str]:
+    """The short tokens in `text` that are written as acronyms, lowercased."""
+    return {
+        token.lower()
+        for token in _WORDS.findall(text) + _MIXED.findall(text)
+        if _ACRONYM.match(token)
+    }
+
+
+def subject_words(words: list[str], short_subjects: set[str] | None = None) -> set[str]:
     """The words in `words` that actually name a subject.
 
-    Noise is decided by the vocabularies, never by length - so a two-letter
-    acronym survives while "the" and "how" do not.
+    Every word is judged by the vocabularies, never by length: an acronym is
+    the most subject-specific token a task can carry, and dropping it let a
+    `code_agent` built for "convert text into qr code" keep "QR code" in its
+    own prompt forever.
+
+    The vocabularies therefore have to be complete about SHORT words too.
+    They were not - "own" and "under" counted as subjects, so every agent
+    whose prompt said "your own" or "under 400 words" was rejected three
+    times over and a whole four-agent task died at generation. Prepositions
+    and pronouns belong in the vocabulary; that is what the vocabulary is.
+
+    `short_subjects` additionally admits acronyms written with a capital or a
+    digit ("3D", "S3"), which the letters-only word pattern cannot see.
     """
+    allowed_short = short_subjects or set()
     return {
         word
-        for word in words
+        for word in list(words) + sorted(allowed_short)
         if len(word) >= MIN_SUBJECT_LENGTH
         and word not in CRAFT_WORDS
         and word not in CONNECTIVES
     }
+
+
+# Endings that turn one word into another form of the same word. A subject
+# does not stop being the subject because the agent wrote "burnouts" instead
+# of "burnout", or "researching" instead of "research".
+_INFLECTIONS = ("ing", "ers", "er", "ies", "es", "s", "ed", "al", "ic")
+
+
+def stem(word: str) -> str:
+    """`word` reduced to the form its inflections share.
+
+    Deliberately crude - no dictionary, no dependency. It only has to make
+    "burnout" and "burnouts" the same string, which is enough to stop a
+    hardcoded subject hiding behind a plural.
+    """
+    for ending in _INFLECTIONS:
+        if len(word) > len(ending) + 3 and word.endswith(ending):
+            trimmed = word[: -len(ending)]
+            return trimmed[:-1] if trimmed.endswith(("i", "y")) else trimmed
+    return word
 
 
 def task_subjects(task: str) -> list[str]:
@@ -134,7 +191,7 @@ def task_subjects(task: str) -> list[str]:
     ("do not hardcode the subject") into one it can actually check itself
     against, and saves the regeneration attempts that discovering it late costs.
     """
-    return sorted(subject_words(_words(task)))
+    return sorted(subject_words(_words(task), acronyms(task)))
 
 
 def phrases(words: list[str]) -> set[tuple[str, str]]:
@@ -230,7 +287,10 @@ def check_topic_leakage(source: str, task: str) -> list[str]:
         return []  # a parse error is codeguard's complaint to make, not this one's
 
     task_words = _words(task)
-    subjects = subject_words(task_words)
+    subjects = subject_words(task_words, acronyms(task))
+    # Compared by stem, so a subject cannot hide behind a plural or a gerund:
+    # an agent written for "burnout" must not slip through saying "burnouts".
+    subject_stems = {stem(word) for word in subjects}
     task_phrases = phrases(task_words)
     task_numbers = _numbers(task)
     if not subjects and not task_phrases and not task_numbers:
@@ -257,7 +317,13 @@ def check_topic_leakage(source: str, task: str) -> list[str]:
         if not literal_words:
             continue
 
-        leaked = sorted(subjects.intersection(literal_words))
+        leaked = sorted(
+            {
+                word
+                for word in literal_words
+                if word in subjects or stem(word) in subject_stems
+            }
+        )
         if leaked:
             listed = ", ".join(repr(word) for word in leaked[:4])
             problems.append(

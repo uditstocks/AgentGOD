@@ -396,3 +396,43 @@ def test_display_path_prefers_relative(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     inside = tmp_path / "runs" / "x.md"
     assert display_path(inside) == str(Path("runs") / "x.md")
+
+
+def test_a_prompt_never_lands_on_stdout(capsys):
+    """Python's input(prompt) prints on stdout - where the ANSWER lives.
+
+    A clarifying question asked during --json put a stray "> " in front of the
+    object and the JSON stopped parsing. A prompt is addressed to the person,
+    never to the pipe.
+    """
+    import builtins
+
+    asked = {}
+
+    def fake_input(prompt=""):
+        asked["prompt"] = prompt
+        return "typed reply"
+
+    original, builtins.input = builtins.input, fake_input
+    try:
+        reply = PlainUI().input("> ")
+    finally:
+        builtins.input = original
+
+    captured = capsys.readouterr()
+    assert reply == "typed reply"
+    assert captured.out == ""          # the pipe stays clean
+    assert "> " in captured.err        # the person still sees the prompt
+    assert asked["prompt"] == ""       # nothing was handed to builtin input()
+
+
+def test_an_empty_prompt_writes_nothing(capsys):
+    import builtins
+
+    original, builtins.input = builtins.input, lambda *a: "x"
+    try:
+        PlainUI().input("")
+    finally:
+        builtins.input = original
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""

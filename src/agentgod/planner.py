@@ -387,6 +387,91 @@ def _fallback_capability(spec: AgentSpec) -> str:
     )
 
 
+def neutralise_names(plan: Plan, task: str) -> list[tuple[str, str]]:
+    """Strip this task's subject out of the agents' names.
+
+    The name is the library's key, and the key outlives the task. A planner
+    that calls an agent `burnout_research_agent` or `qr_code_agent` has
+    written today's topic into the one field that is permanent: nothing in
+    the file is wrong, so every source-level guard passes it, and the name
+    sits in the catalogue for good. The planner is then shown it on every
+    later task and told to prefer an existing name - so the library fills
+    with subject-shaped near-duplicates of `research_agent`, each one a full
+    generation call that will never be reused for anything else.
+
+    Removing the subject usually leaves exactly the right name behind:
+    `qr_code_agent` becomes `code_agent`, `burnout_research_agent` becomes
+    `research_agent`. When it leaves nothing usable, the standard name for
+    that agent's stage is used instead.
+
+    `depends_on` is rewritten with the rest, because those are references to
+    the very names being changed. Returns (old, new) for each rename.
+    """
+    from .topicguard import stem, subject_words
+
+    subjects = subject_words(_words_in(task), _acronyms_in(task))
+    banned = {stem(word) for word in subjects} | subjects
+    if not banned:
+        return []
+
+    taken = {spec.name for spec in plan.agents}
+    renames: list[tuple[str, str]] = []
+    for spec in plan.agents:
+        parts = [p for p in spec.name.split("_") if p]
+        kept = [p for p in parts if p not in banned and stem(p) not in banned]
+        if len(kept) == len(parts):
+            continue
+
+        candidate = "_".join(kept)
+        if candidate in ("", "agent"):
+            candidate = _standard_name_for(spec)
+        elif not candidate.endswith("agent"):
+            candidate = f"{candidate}_agent"
+
+        try:
+            candidate = safe_agent_name(candidate)
+        except ValueError:
+            candidate = _standard_name_for(spec)
+
+        if candidate == spec.name:
+            continue
+        base, suffix = candidate, 2
+        while candidate in taken:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        taken.discard(spec.name)
+        taken.add(candidate)
+        renames.append((spec.name, candidate))
+        spec.name = candidate
+
+    # The wiring refers to the old names, so it moves with them.
+    moved = dict(renames)
+    for spec in plan.agents:
+        spec.depends_on = [moved.get(name, name) for name in spec.depends_on]
+    return renames
+
+
+def _standard_name_for(spec: AgentSpec) -> str:
+    """The neutral name for whatever stage this agent belongs to."""
+    rank = stage_rank(spec.name, spec.role)
+    for name in STANDARD_AGENTS:
+        if stage_rank(name) == rank:
+            return name
+    return "writer_agent"
+
+
+def _words_in(text: str) -> list[str]:
+    from .topicguard import _words
+
+    return _words(text)
+
+
+def _acronyms_in(text: str) -> set[str]:
+    from .topicguard import acronyms
+
+    return acronyms(text)
+
+
 def scrub_capabilities(plan: Plan, task: str) -> list[str]:
     """Guarantee no agent's capability carries this task's subject.
 

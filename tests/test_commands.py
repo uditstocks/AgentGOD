@@ -265,3 +265,35 @@ def test_last_with_nothing_archived_says_so(tmp_path, monkeypatch):
     command = parse("/last")
     assert command is not None
     assert "Nothing archived yet" in handle(command)
+
+
+def test_where_names_every_place_the_program_keeps_something(tmp_path, monkeypatch):
+    """"It was saved" is only useful if the user is told where.
+
+    An installed AgentGod writes to a platform directory nobody has reason to
+    guess at, so the archive was effectively unreachable.
+    """
+    from agentgod import config, library
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(config, "INVENTORY_DIR", tmp_path / "inventory")
+    monkeypatch.setattr(config, "ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr(library, "INVENTORY_DIR", tmp_path / "inventory")
+    monkeypatch.setattr(library, "LIBRARY_DIR", tmp_path / "inventory" / "agents")
+    monkeypatch.setattr(library, "INDEX_PATH", tmp_path / "inventory" / "index.json")
+
+    command = parse("/where")
+    assert command is not None
+    reply = handle(command)
+    assert str(tmp_path) in reply
+    assert "runs" in reply and "inventory" in reply and ".env" in reply
+    assert "/last" in reply          # and how to get an answer back
+    assert "AGENTGOD_HOME" in reply  # and how to move it
+
+
+def test_where_has_aliases():
+    for name in ("where", "home", "path"):
+        command = parse(f"/{name}")
+        assert command is not None
+        assert "AgentGod keeps" in handle(command)

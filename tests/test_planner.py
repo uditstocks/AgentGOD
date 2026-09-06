@@ -372,3 +372,72 @@ def test_the_role_is_untouched_because_it_is_only_ever_displayed():
     )
     scrub_capabilities(plan, "implement the SQL flow")
     assert plan.agents[0].role == "Implement the SQL flow"
+
+
+# --- the name is the library's key, and it outlives the task -------------------
+#
+# An agent called `burnout_research_agent` has today's topic written into the
+# one permanent field. Nothing in its FILE is wrong, so every source-level
+# guard passes it - and the planner is then shown it on every later task and
+# told to prefer an existing name. The library fills with subject-shaped
+# near-duplicates of `research_agent` that will never be reused.
+
+
+def test_a_subject_in_the_name_is_stripped_out():
+    from agentgod.planner import neutralise_names
+
+    plan = Plan(
+        agents=[
+            spec("burnout_research_agent", role="gather facts"),
+            spec("qr_code_agent", role="write code", depends_on=["burnout_research_agent"]),
+        ],
+        reasoning="r",
+    )
+    renames = neutralise_names(plan, "research on-call burnout and convert text into qr code")
+
+    assert dict(renames) == {
+        "burnout_research_agent": "research_agent",
+        "qr_code_agent": "code_agent",
+    }
+    assert [s.name for s in plan.agents] == ["research_agent", "code_agent"]
+
+
+def test_the_wiring_follows_the_rename():
+    """depends_on holds the very names being changed."""
+    from agentgod.planner import neutralise_names
+
+    plan = Plan(
+        agents=[
+            spec("burnout_research_agent", role="gather facts"),
+            spec("writer_agent", role="write it", depends_on=["burnout_research_agent"]),
+        ],
+        reasoning="r",
+    )
+    neutralise_names(plan, "research on-call burnout")
+    by_name = {s.name: s for s in plan.agents}
+    assert "research_agent" in by_name
+    assert by_name["writer_agent"].depends_on == ["research_agent"]
+
+
+def test_a_neutral_name_is_left_alone():
+    from agentgod.planner import neutralise_names
+
+    plan = Plan(agents=[spec("research_agent"), spec("writer_agent")], reasoning="r")
+    assert neutralise_names(plan, "research on-call burnout") == []
+    assert [s.name for s in plan.agents] == ["research_agent", "writer_agent"]
+
+
+def test_a_rename_that_would_collide_stays_unique():
+    from agentgod.planner import neutralise_names
+
+    plan = Plan(
+        agents=[
+            spec("research_agent", role="gather one thing"),
+            spec("burnout_research_agent", role="gather another thing"),
+        ],
+        reasoning="r",
+    )
+    neutralise_names(plan, "research on-call burnout")
+    names = [s.name for s in plan.agents]
+    assert len(names) == len(set(names))
+    assert not any("burnout" in n for n in names)

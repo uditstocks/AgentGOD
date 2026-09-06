@@ -23,6 +23,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "audit": ("", "check the library for agents that hardcoded their first task"),
     "history": ("[n]", "the recent archived runs, or reopen run n"),
     "last": ("", "show the most recent answer again"),
+    "where": ("", "where your answers, agents and key are kept on disk"),
     "clear": ("", "forget the conversation so far"),
     "paste": ("", "start a multi-line task; end it with a line containing only ."),
     "quit": ("", "leave"),
@@ -253,6 +254,42 @@ def _history_text(argument: str = "", limit: int = 10) -> str:
     return "\n".join(lines)
 
 
+def _where_text() -> str:
+    """Where everything this program keeps actually lives.
+
+    The answer to a task is archived, but an installed AgentGod writes to a
+    platform directory nobody has reason to guess at - so "it was saved" is
+    only useful if the user is told where, and how to get it back.
+    """
+    from .config import DATA_DIR, ENV_FILE, INVENTORY_DIR, RUNS_DIR
+
+    archived = len(_archived_runs())
+    kept = 0
+    try:
+        from .library import catalogue
+
+        kept = len(catalogue())
+    except Exception:
+        pass
+
+    return "\n".join(
+        [
+            "**Everything AgentGod keeps lives here:**",
+            "",
+            f"    {DATA_DIR}",
+            "",
+            f"    answers    {RUNS_DIR}",
+            f"               {archived} archived · `{PREFIX}last` reprints the newest,"
+            f" `{PREFIX}history` lists them",
+            f"    agents     {INVENTORY_DIR}",
+            f"               {kept} kept · `{PREFIX}library` lists them",
+            f"    your key   {ENV_FILE}",
+            "",
+            "Set `AGENTGOD_HOME` to keep all of it somewhere else.",
+        ]
+    )
+
+
 def _last_text() -> str:
     """The most recent answer, shown again without paying for it twice."""
     files = _archived_runs()
@@ -273,6 +310,8 @@ def handle(command: Command, conversation=None) -> str:
         return _forget_text(command.argument)
     if command.name == "audit":
         return _audit_text()
+    if command.name in ("where", "home", "path"):
+        return _where_text()
     if command.name in ("history", "runs"):
         return _history_text(command.argument)
     if command.name in ("last", "again"):

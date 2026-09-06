@@ -140,8 +140,17 @@ class PlainUI(TaskEvents):
             self._tell(f"  {variable:<20} {explanation}")
 
     def input(self, message: str) -> str:
-        """Read one reply. EOFError / KeyboardInterrupt pass through to the caller."""
-        return input(message)
+        """Read one reply. EOFError / KeyboardInterrupt pass through to the caller.
+
+        The prompt is written to stderr, not stdout. Python's builtin
+        `input(prompt)` prints the prompt on stdout, which is where the ANSWER
+        lives - so a clarifying question asked during `--json` put a stray
+        "> " in front of the object and the JSON no longer parsed. A prompt is
+        addressed to the person, never to the pipe.
+        """
+        if message:
+            print(message, end="", file=sys.stderr, flush=True)
+        return input()
 
     def status(self, message: str) -> Any:
         """A heartbeat for a wait with no board on screen yet.
@@ -234,7 +243,9 @@ class PlainUI(TaskEvents):
             self._say(f"Newly built this run: {', '.join(result.built)}")
 
         if saved is not None:
-            self._say(f"Saved to {display_path(saved)}")
+            # Where it went, and how to get it back: an installed user has no
+            # reason to know the archive directory exists.
+            self._say(f"Saved to {display_path(saved)}  (/last reopens it)")
         else:
             self._say("(could not write the run archive)")
 
