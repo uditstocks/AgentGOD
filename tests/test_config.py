@@ -207,3 +207,40 @@ def test_the_effort_dial_is_only_sent_to_models_that_take_it():
     assert supports_effort("claude-sonnet-5") is True
     assert supports_effort("claude-opus-5") is True
     assert supports_effort("claude-haiku-4-5") is False
+
+
+# --- the client never asks for a compression its own decoder cannot read -------
+
+
+def test_the_client_does_not_offer_brotli(monkeypatch):
+    """A real install failed every run with "check your internet connection".
+
+    The SDK's HTTP layer offers `br` whenever the unrelated `Brotli` package
+    is installed - as it often is, pulled in by something else - and then
+    calls that package's decompressor with a keyword argument it does not
+    accept. Every reply died inside the client as
+    `TypeError: process() takes no keyword arguments`, which the SDK wraps as
+    APIConnectionError. The network was never the problem.
+    """
+    from agentgod.config import SAFE_ENCODINGS
+
+    assert "br" not in [part.strip() for part in SAFE_ENCODINGS.split(",")]
+    assert "gzip" in SAFE_ENCODINGS
+
+
+def test_the_header_reaches_the_client(monkeypatch):
+    seen = {}
+
+    class _FakeAnthropic:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr(config.anthropic, "Anthropic", _FakeAnthropic)
+    config.get_client.cache_clear()
+    try:
+        config.get_client()
+    finally:
+        config.get_client.cache_clear()
+
+    assert seen["default_headers"]["Accept-Encoding"] == config.SAFE_ENCODINGS

@@ -254,6 +254,21 @@ def require_api_key() -> None:
         sys.exit("ANTHROPIC_API_KEY is not set. Copy .env.example to .env and add your key.")
 
 
+# The compressions we let the API use on a reply.
+#
+# Brotli is deliberately absent. The SDK's HTTP layer offers `br` whenever the
+# unrelated `Brotli` package happens to be installed - which it very often is,
+# as a dependency of something else entirely - and then calls that package's
+# decompressor with a keyword argument it does not accept. Every reply then
+# dies inside the client with `TypeError: process() takes no keyword
+# arguments`, which the SDK wraps as APIConnectionError. The user is told to
+# check their internet connection, and their internet is fine.
+#
+# Not asking for brotli costs a little bandwidth and nothing else: gzip is
+# universally supported and the replies here are small.
+SAFE_ENCODINGS = "gzip, deflate"
+
+
 @functools.lru_cache(maxsize=1)
 def get_client() -> anthropic.Anthropic:
     """The one Anthropic client the main agent uses.
@@ -266,6 +281,7 @@ def get_client() -> anthropic.Anthropic:
         api_key=os.environ["ANTHROPIC_API_KEY"],
         timeout=float(LLM_TIMEOUT_SECONDS),
         max_retries=LLM_MAX_RETRIES,
+        default_headers={"Accept-Encoding": SAFE_ENCODINGS},
     )
 
 
