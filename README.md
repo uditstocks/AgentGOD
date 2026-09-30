@@ -212,27 +212,27 @@ from nothing. It never does the work itself.
          │  source, per agent
          ▼
    ┌───────────┐
-   │ CODEGUARD │   reads that function before it is allowed to run
+   │ CODEGUARD  │   reads that function before it is allowed to run
    └─────┬─────┘
          │  cleared
          ▼
    ┌───────────┐
-   │  EXECUTOR │   runs the graph in waves - independent agents side by side,
+   │  EXECUTOR  │   runs the graph in waves - independent agents side by side,
    └─────┬─────┘   dependent ones in strict sequence, each against a clock
          │  output - or a reason it failed
          ▼
    ┌───────────┐
-   │   MERGER  │   collapses every voice into one answer
+   │   MERGER   │   collapses every voice into one answer
    └─────┬─────┘
          │  a finished answer
          ▼
    ┌───────────┐
-   │  COUNCIL  │   deep tasks only: an adversarial critic cross-examines the
+   │  COUNCIL   │   deep tasks only: an adversarial critic cross-examines the
    └─────┬─────┘   answer, and real faults drive one refinement pass
          │  it survives the reading
          ▼
    ┌───────────┐
-   │ JUDGEMENT │   reads it back against the request  ──┐  short?
+   │ JUDGEMENT  │   reads it back against the request  ──┐  short?
    └─────┬─────┘                                        │  run again
          │  it holds                        ────────────┘
          ▼
